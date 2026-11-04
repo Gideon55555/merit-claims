@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root { --ink:#17212b; --muted:#5d6b78; --brand:#0f4c45; --brand-2:#16685e; --ok:#1d7a46; --ok-soft:#e6f4ec; --bad:#b42318; --bad-soft:#fdecea; --warn-soft:#fff6e0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #ffffff; color: var(--ink); font: 16px/1.45 "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  .wrap { max-width: 460px; margin: 0 auto; padding: 28px 18px 40px; }
+  .card { background: #fff; border-radius: 14px; padding: 26px 22px; box-shadow: 0 10px 30px rgba(15,76,69,.10); border-top: 5px solid var(--brand); }
+  h1 { margin: 0; font-size: 21px; color: var(--brand); }
+  p.sub { margin: 4px 0 20px; color: var(--muted); font-size: 14.5px; }
+  label { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 6px; color: #33414d; }
+  input { width: 100%; padding: 13px 14px; font: inherit; font-size: 19px; letter-spacing: .5px; border: 1px solid #c9d1d7; border-radius: 9px; outline: none; }
+  input:focus { border-color: var(--brand-2); box-shadow: 0 0 0 3px rgba(22,104,94,.15); }
+  button { width: 100%; margin-top: 12px; padding: 13px; font: inherit; font-weight: 600; font-size: 16px; color: #fff; background: var(--brand); border: 0; border-radius: 9px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: wait; }
+  .res { margin-top: 18px; border-radius: 10px; padding: 16px; }
+  .res.free { background: var(--ok-soft); color: var(--ok); border: 1px solid #bfe3cd; }
+  .res.claimed { background: var(--bad-soft); color: var(--bad); border: 1px solid #f5c2bd; }
+  .res.warn { background: var(--warn-soft); color: #7a5600; border: 1px solid #f1dc9f; }
+  .big { font-size: 20px; font-weight: 700; display: block; margin-bottom: 4px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin: 10px 0 0; font-size: 15px; }
+  dt { color: var(--muted); } dd { margin: 0; font-weight: 600; color: var(--ink); }
+  .note { color: var(--muted); font-size: 13px; margin-top: 16px; text-align: center; }
+  .spin { display: inline-block; width: 15px; height: 15px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="card" id="f" autocomplete="off">
+    <h1>Merit Properties</h1>
+    <p class="sub">Check if a customer's number is free or already claimed.</p>
+    <label for="ph">Customer phone number</label>
+    <input id="ph" type="tel" inputmode="tel" placeholder="0911 51 83" autofocus>
+    <button id="b" type="submit">Check number</button>
+    <div id="out"></div>
+  </form>
+  <p class="note">A number stays claimed for 30 days after it is registered.<br>Enter at least the first 8 digits.</p>
+</div>
+<script>
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const out = document.getElementById('out'), btn = document.getElementById('b'), ph = document.getElementById('ph');
+document.getElementById('f').onsubmit = (e) => {
+  e.preventDefault();
+  if (!ph.value.trim()) { ph.focus(); return; }
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Checking…'; out.innerHTML = '';
+  google.script.run
+    .withSuccessHandler((r) => {
+      done();
+      if (!r.valid) { out.innerHTML = '<div class="res warn">' + esc(r.error) + '</div>'; return; }
+      if (!r.claimed) {
+        out.innerHTML = '<div class="res free"><span class="big">✓ Free</span><b>' + esc(r.formatted) + '</b> is not claimed. It can be registered.</div>';
+        return;
+      }
+      out.innerHTML = '<div class="res claimed"><span class="big">✗ Already claimed</span><dl>' +
+        '<dt>Number</dt><dd>' + esc(r.formatted) + '</dd>' +
+        (r.agent ? '<dt>Claimed by</dt><dd>' + esc(r.agent) + '</dd>' : '') +
+        '<dt>Category</dt><dd>' + esc(r.category) + '</dd>' +
+        '<dt>Registered</dt><dd>' + esc(r.date) + '</dd>' +
+        '<dt>Free from</dt><dd>' + esc(r.freeFrom) + '</dd></dl></div>';
+    })
+    .withFailureHandler((err) => { done(); out.innerHTML = '<div class="res warn">' + esc((err && err.message) || err) + '</div>'; })
+    .publicCheck(ph.value);
+};
+function done() { btn.disabled = false; btn.textContent = 'Check number'; }
+</script>
+</body>
+</html>

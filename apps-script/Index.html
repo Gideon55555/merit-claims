@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root {
+    --ink: #17212b; --muted: #5d6b78; --line: #dfe4e8; --bg: #ffffff; --card: #ffffff;
+    --brand: #0f4c45; --brand-2: #16685e; --brand-soft: #e5f1ee; --gold: #b8892d;
+    --ok: #1d7a46; --ok-soft: #e6f4ec; --bad: #b42318; --bad-soft: #fdecea; --warn-soft: #fff6e0;
+    --r: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  .hidden { display: none !important; }
+
+  /* Login */
+  .center { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+  .login { width: 100%; max-width: 380px; background: var(--card); border-radius: 14px; padding: 30px 28px; box-shadow: 0 10px 30px rgba(15,76,69,.12); border-top: 5px solid var(--brand); }
+  .login h1 { margin: 0 0 2px; font-size: 22px; color: var(--brand); letter-spacing: .2px; }
+  .login p.sub { margin: 0 0 22px; color: var(--muted); }
+
+  /* Shell */
+  header { background: var(--brand); color: #fff; position: sticky; top: 0; z-index: 20; }
+  .bar { max-width: 1180px; margin: 0 auto; padding: 10px 18px; display: flex; align-items: center; gap: 16px; }
+  .brand { font-weight: 700; font-size: 17px; white-space: nowrap; }
+  .brand small { display: block; font-weight: 400; opacity: .75; font-size: 12px; }
+  .me { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .me .role { background: rgba(255,255,255,.15); border-radius: 20px; padding: 2px 9px; text-transform: capitalize; }
+  @media (max-width: 640px) {
+    .bar { flex-wrap: wrap; gap: 6px 12px; padding: 10px 14px; }
+    .brand small { display: none; }
+    .me { margin-left: 0; width: 100%; }
+    .me #meName { flex: 1; }
+    main { padding: 16px 12px 50px; }
+    .card { padding: 16px; }
+  }
+  .me button { background: transparent; border: 1px solid rgba(255,255,255,.4); color: #fff; border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+  nav { max-width: 1180px; margin: 0 auto; padding: 0 12px; display: flex; gap: 2px; overflow-x: auto; }
+  nav button { background: none; border: 0; color: rgba(255,255,255,.75); padding: 10px 14px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
+  nav button.on { color: #fff; border-bottom-color: var(--gold); font-weight: 600; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 18px 60px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 20px; margin-bottom: 18px; }
+  .card h2 { margin: 0 0 4px; font-size: 18px; }
+  .card .hint { margin: 0 0 16px; color: var(--muted); font-size: 13.5px; }
+  .grid2 { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+
+  /* Forms */
+  label.f { display: block; margin-bottom: 14px; }
+  label.f > span { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: #33414d; }
+  input[type=text], input[type=password], input[type=tel], input[type=search], select {
+    width: 100%; padding: 10px 12px; border: 1px solid #c9d1d7; border-radius: 8px; background: #fff; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--brand-2); box-shadow: 0 0 0 3px rgba(22,104,94,.15); }
+  input:disabled { background: #f1f3f4; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 18px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-weight: 600; }
+  .btn.primary { background: var(--brand); color: #fff; }
+  .btn.primary:hover { background: var(--brand-2); }
+  .btn.ghost { background: #fff; border-color: #c9d1d7; }
+  .btn.small { padding: 5px 10px; font-size: 13px; font-weight: 500; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.wide { width: 100%; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg button { padding: 12px 8px; border: 1.5px solid #c9d1d7; background: #fff; border-radius: 9px; cursor: pointer; font-weight: 600; color: #33414d; }
+  .seg button.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+  .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .row > * { flex: 1 1 160px; }
+  .row > .shrink { flex: 0 0 auto; }
+
+  /* Combobox */
+  .combo { position: relative; }
+  .combo .list { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; background: #fff; border: 1px solid #c9d1d7; border-radius: 8px; max-height: 260px; overflow-y: auto; z-index: 30; box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+  .combo .opt { padding: 9px 12px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+  .combo .opt small { color: var(--muted); }
+  .combo .opt.act, .combo .opt:hover { background: var(--brand-soft); }
+  .combo .empty { padding: 10px 12px; color: var(--muted); }
+  .chip { display: inline-block; background: var(--brand-soft); color: var(--brand); padding: 3px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+  .chip.grey { background: #eef1f3; color: #44525e; }
+
+  /* Status boxes */
+  .status { border-radius: 9px; padding: 12px 14px; margin-top: 8px; font-size: 14px; }
+  .status.ok { background: var(--ok-soft); color: var(--ok); border: 1px solid #bfe3cd; }
+  .status.bad { background: var(--bad-soft); color: var(--bad); border: 1px solid #f5c2bd; }
+  .status.info { background: #eef3f7; color: #3a4a57; border: 1px solid #d6e0e8; }
+  .status.warn { background: var(--warn-soft); color: #7a5600; border: 1px solid #f1dc9f; }
+  .status b { color: inherit; }
+  .status .big { font-size: 16px; font-weight: 700; display: block; margin-bottom: 3px; }
+  .result { margin-top: 16px; }
+  dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 8px 0 0; font-size: 14px; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; font-weight: 600; color: var(--ink); }
+
+  /* Tables */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; background: #f6f8f9; color: #44525e; font-weight: 600; padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; position: sticky; top: 0; }
+  td { padding: 8px 10px; border-bottom: 1px solid #eef1f3; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.nowrap { white-space: nowrap; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .tag.lock { background: var(--bad-soft); color: var(--bad); }
+  .tag.free { background: var(--ok-soft); color: var(--ok); }
+  .tag.off { background: #eef1f3; color: #6b7883; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat { background: #f6f8f9; border: 1px solid var(--line); border-radius: 9px; padding: 9px 14px; min-width: 140px; }
+  .stat b { display: block; font-size: 20px; color: var(--brand); }
+  .stat span { font-size: 12.5px; color: var(--muted); }
+  .muted { color: var(--muted); }
+  .count { color: var(--muted); font-size: 13px; margin: 10px 0; }
+
+  /* Modal + toast */
+  .modal-bg { position: fixed; inset: 0; background: rgba(15,25,35,.45); display: grid; place-items: center; z-index: 50; padding: 16px; }
+  .modal { background: #fff; border-radius: 12px; padding: 22px; width: 100%; max-width: 440px; max-height: 92vh; overflow: auto; }
+  .modal h3 { margin: 0 0 16px; }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #22303c; color: #fff; padding: 10px 18px; border-radius: 8px; z-index: 60; font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.2); max-width: 90vw; }
+  #toast.err { background: var(--bad); }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .check { display: flex; align-items: center; gap: 7px; font-size: 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="vLogin" class="center hidden">
+  <form class="login" id="loginForm" autocomplete="on">
+    <h1>Merit Properties</h1>
+    <p class="sub">Customer Claim System</p>
+    <label class="f"><span>Username</span><input type="text" id="lUser" autocomplete="username" required autofocus></label>
+    <label class="f"><span>Password</span><input type="password" id="lPass" autocomplete="current-password" required></label>
+    <button class="btn primary wide" id="lBtn" type="submit">Log in</button>
+    <div id="lMsg"></div>
+  </form>
+</div>
+
+<!-- FORCED PASSWORD CHANGE -->
+<div id="vPw" class="center hidden">
+  <form class="login" id="pwForm">
+    <h1>Set your password</h1>
+    <p class="sub">Choose a new password before you continue.</p>
+    <label class="f"><span>Current (temporary) password</span><input type="password" id="pwOld" required></label>
+    <label class="f"><span>New password (at least 6 characters)</span><input type="password" id="pwNew" required></label>
+    <label class="f"><span>Repeat new password</span><input type="password" id="pwNew2" required></label>
+    <button class="btn primary wide" type="submit">Save password</button>
+    <div id="pwMsg"></div>
+  </form>
+</div>
+
+<!-- APP -->
+<div id="vApp" class="hidden">
+  <header>
+    <div class="bar">
+      <div class="brand">Merit Properties<small>Customer Claim System</small></div>
+      <div class="me"><span id="meName"></span><span class="role" id="meRole"></span>
+        <button id="btnChangePw" type="button">Password</button><button id="btnLogout" type="button">Log out</button></div>
+    </div>
+    <nav id="nav"></nav>
+  </header>
+  <main>
+
+    <!-- Register -->
+    <section id="tRegister" class="tab hidden">
+      <div class="grid2">
+        <div class="card">
+          <h2>Register a customer</h2>
+          <p class="hint">A number can only be claimed once every 30 days, across all three categories.</p>
+          <form id="regForm" autocomplete="off">
+            <label class="f"><span>Category</span>
+              <div class="seg" id="regCat">
+                <button type="button" data-v="expecting">Expecting</button>
+                <button type="button" data-v="office">Office Visit</button>
+                <button type="button" data-v="site">Site Visit</button>
+              </div>
+            </label>
+            <label class="f"><span>Customer name</span><input type="text" id="regName" maxlength="80"></label>
+            <label class="f"><span>Customer phone</span><input type="tel" id="regPhone" placeholder="0911 51 83 or 0911 51 83 75" inputmode="tel"></label>
+            <div id="regPhoneStatus"></div>
+            <div class="row" style="margin-top:14px">
+              <label class="f"><span>Agent type</span><select id="regType"></select></label>
+              <label class="f"><span>Agent name</span>
+                <div class="combo" id="regCombo"><input type="text" id="regAgent" placeholder="Choose type first" disabled><div class="list hidden"></div></div>
+              </label>
+            </div>
+            <div id="regSup" class="muted" style="margin:-4px 0 16px;font-size:14px"></div>
+            <button class="btn primary wide" id="regBtn" type="submit">Register customer</button>
+          </form>
+        </div>
+        <div>
+          <div id="regResult"></div>
+          <div class="card" id="regRecent">
+            <h2>Registered this session</h2>
+            <p class="hint" id="regRecentHint">Nothing yet.</p>
+            <div id="regRecentList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Check -->
+    <section id="tCheck" class="tab hidden">
+      <div class="card" style="max-width:820px">
+        <h2>Check a phone number</h2>
+        <p class="hint">See if a number is free or claimed, and its past registrations.</p>
+        <form id="chkForm" class="row">
+          <label class="f"><span>Phone number</span><input type="tel" id="chkPhone" placeholder="0911 51 83" inputmode="tel"></label>
+          <div class="shrink" style="margin-bottom:14px"><button class="btn primary" type="submit">Check</button></div>
+        </form>
+        <div id="chkResult"></div>
+      </div>
+    </section>
+
+    <!-- Records -->
+    <section id="tRecords" class="tab hidden">
+      <div class="card">
+        <h2>Records</h2>
+        <p class="hint">Read from the Expecting, Office Visit and Site Visit tabs.</p>
+        <div class="stats" id="recStats"></div>
+        <form id="recForm" class="row">
+          <label class="f"><span>Category</span><select id="recCat">
+            <option value="all">All categories</option><option value="expecting">Expecting</option><option value="office">Office Visit</option><option value="site">Site Visit</option></select></label>
+          <label class="f"><span>Period</span><select id="recDays">
+            <option value="1">Today</option><option value="7">Last 7 days</option><option value="31" selected>Last 31 days</option><option value="90">Last 90 days</option><option value="0">All time</option></select></label>
+          <label class="f" style="flex:2 1 220px"><span>Search name, phone, agent, supervisor</span><input type="search" id="recQ"></label>
+          <label class="check shrink" style="margin-bottom:24px"><input type="checkbox" id="recLocked"> Locked only</label>
+          <div class="shrink" style="margin-bottom:14px"><button class="btn primary" type="submit">Show</button></div>
+        </form>
+        <div class="count" id="recCount"></div>
+        <div class="tbl-wrap" style="max-height:65vh"><table><thead><tr>
+          <th>Date</th><th>Category</th><th>Customer</th><th>Phone</th><th>Agent</th><th>Supervisor</th><th>Entered by</th><th>Status</th>
+        </tr></thead><tbody id="recBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- Users -->
+    <section id="tUsers" class="tab hidden">
+      <div class="card">
+        <div class="row" style="align-items:center;margin-bottom:12px">
+          <div><h2>Users</h2><p class="hint" style="margin:0">Admin: everything · Data entry: register and check · Viewer: records and check</p></div>
+          <div class="shrink"><button class="btn primary" id="btnAddUser" type="button">+ Add user</button></div>
+        </div>
+        <div class="tbl-wrap"><table><thead><tr><th>Username</th><th>Full name</th><th>Role</th><th>Status</th><th>Last login</th><th></th></tr></thead><tbody id="usrBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- Agents -->
+    <section id="tAgents" class="tab hidden">
+      <div class="card">
+        <div class="row" style="align-items:center;margin-bottom:12px">
+          <div><h2>Agents</h2><p class="hint" style="margin:0">Names shown in the register form. Sales agents are linked to their supervisor.</p></div>
+          <div class="shrink"><button class="btn primary" id="btnAddAgent" type="button">+ Add agent</button></div>
+        </div>
+        <div class="row">
+          <label class="f"><span>Type</span><select id="agType"></select></label>
+          <label class="f" style="flex:2 1 240px"><span>Search</span><input type="search" id="agQ"></label>
+          <label class="check shrink" style="margin-bottom:24px"><input type="checkbox" id="agInactive"> Show inactive</label>
+        </div>
+        <div class="count" id="agCount"></div>
+        <div class="tbl-wrap" style="max-height:62vh"><table><thead><tr><th>Type</th><th>Name</th><th>Supervisor</th><th>Phone</th><th>Status</th><th></th></tr></thead><tbody id="agBody"></tbody></table></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal" class="modal-bg hidden"><div class="modal" id="modalBox"></div></div>
+<div id="toast" class="hidden"></div>
+
+<script>
+const CATS = { expecting: 'Expecting', office: 'Office Visit', site: 'Site Visit' };
+const TABS = [
+  { id: 'tRegister', label: 'Register', roles: ['admin', 'entry'] },
+  { id: 'tCheck', label: 'Check number', roles: ['admin', 'entry', 'viewer'] },
+  { id: 'tRecords', label: 'Records', roles: ['admin', 'viewer'] },
+  { id: 'tUsers', label: 'Users', roles: ['admin'] },
+  { id: 'tAgents', label: 'Agents', roles: ['admin'] },
+];
+const ROLE_LABEL = { admin: 'Admin', entry: 'Data entry', viewer: 'Viewer' };
+const S = { token: null, user: null, agents: [], types: [], cat: null, agent: null, phoneState: null, users: [] };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ---------- server calls ---------- */
+function call(fn, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler((e) => {
+        const m = (e && e.message) || String(e);
+        if (m.indexOf('SESSION_EXPIRED') >= 0) { toast('Your session ended. Please log in again.', true); clearSession(); showLogin(); }
+        else if (m.indexOf('PASSWORD_CHANGE_REQUIRED') >= 0) { showPw(); }
+        reject(new Error(m.replace(/^Error:\s*/, '')));
+      })[fn](...args);
+  });
+}
+function store(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+function clearSession() { S.token = null; S.user = null; store('mc_token', null); }
+
+let toastT;
+function toast(msg, err) {
+  const t = $('toast'); t.textContent = msg; t.className = err ? 'err' : ''; clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.add('hidden'), 3800);
+}
+function busy(btn, on, text) {
+  if (!btn) return;
+  if (on) { btn.dataset.t = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spin"></span> ' + (text || 'Working…'); }
+  else { btn.disabled = false; if (btn.dataset.t) btn.innerHTML = btn.dataset.t; }
+}
+function msgBox(el, cls, html) { el.innerHTML = html ? '<div class="status ' + cls + '">' + html + '</div>' : ''; }
+
+/* ---------- views ---------- */
+function showOnly(id) { ['vLogin', 'vPw', 'vApp'].forEach((v) => $(v).classList.toggle('hidden', v !== id)); }
+function showLogin() { showOnly('vLogin'); $('lPass').value = ''; $('lMsg').innerHTML = ''; $('lUser').focus(); }
+function showPw() { showOnly('vPw'); ['pwOld', 'pwNew', 'pwNew2'].forEach((i) => ($(i).value = '')); $('pwMsg').innerHTML = ''; }
+
+async function startApp() {
+  showOnly('vApp');
+  $('meName').textContent = S.user.name || S.user.username;
+  $('meRole').textContent = ROLE_LABEL[S.user.role] || S.user.role;
+  const tabs = TABS.filter((t) => t.roles.indexOf(S.user.role) >= 0);
+  $('nav').innerHTML = tabs.map((t) => '<button type="button" data-tab="' + t.id + '">' + t.label + '</button>').join('');
+  $('nav').querySelectorAll('button').forEach((b) => (b.onclick = () => openTab(b.dataset.tab)));
+  openTab(tabs[0].id);
+  try {
+    const r = await call('getAgents', S.token);
+    S.agents = r.agents; S.types = r.types;
+    fillTypeSelects();
+    if (S.user.role === 'admin') renderAgents();
+  } catch (e) { toast(e.message, true); }
+}
+
+function openTab(id) {
+  document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('hidden', s.id !== id));
+  $('nav').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === id));
+  if (id === 'tRecords' && !S.recLoaded) loadRecords();
+  if (id === 'tUsers') loadUsers();
+}
+
+/* ---------- login ---------- */
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $('lBtn'); busy(btn, true, 'Logging in…'); $('lMsg').innerHTML = '';
+  try {
+    const r = await call('login', $('lUser').value, $('lPass').value);
+    S.token = r.token; S.user = r.user; store('mc_token', r.token);
+    if (r.user.mustChange) showPw(); else startApp();
+  } catch (err) { msgBox($('lMsg'), 'bad', esc(err.message)); }
+  busy(btn, false);
+};
+$('pwForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if ($('pwNew').value !== $('pwNew2').value) return msgBox($('pwMsg'), 'bad', 'The new passwords do not match.');
+  const btn = e.submitter; busy(btn, true);
+  try {
+    S.user = await call('changePassword', S.token, $('pwOld').value, $('pwNew').value);
+    toast('Password saved'); startApp();
+  } catch (err) { msgBox($('pwMsg'), 'bad', esc(err.message)); }
+  busy(btn, false);
+};
+$('btnLogout').onclick = async () => { const t = S.token; clearSession(); showLogin(); try { await call('logout', t); } catch (e) {} };
+$('btnChangePw').onclick = () => {
+  openModal('<h3>Change password</h3>' +
+    '<label class="f"><span>Current password</span><input type="password" id="mOld"></label>' +
+    '<label class="f"><span>New password</span><input type="password" id="mNew"></label>' +
+    '<label class="f"><span>Repeat new password</span><input type="password" id="mNew2"></label><div id="mMsg"></div>' +
+    '<div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="mSave" type="button">Save</button></div>');
+  $('mSave').onclick = async () => {
+    if ($('mNew').value !== $('mNew2').value) return msgBox($('mMsg'), 'bad', 'The new passwords do not match.');
+    busy($('mSave'), true);
+    try { S.user = await call('changePassword', S.token, $('mOld').value, $('mNew').value); closeModal(); toast('Password changed'); }
+    catch (err) { msgBox($('mMsg'), 'bad', esc(err.message)); busy($('mSave'), false); }
+  };
+};
+
+/* ---------- agent pickers ---------- */
+function fillTypeSelects() {
+  $('regType').innerHTML = '<option value="">Choose type…</option>' + S.types.map((t) => '<option>' + esc(t) + '</option>').join('');
+  $('agType').innerHTML = '<option value="">All types</option>' + S.types.map((t) => '<option>' + esc(t) + '</option>').join('');
+}
+function supOf(a) { return a.type === 'Supervisor' ? a.name : a.supervisor; }
+
+function combo(rootId, getItems, onPick) {
+  const root = $(rootId), input = root.querySelector('input'), list = root.querySelector('.list');
+  let items = [], act = 0;
+  function render() {
+    const q = input.value.trim().toLowerCase();
+    items = getItems().filter((a) => !q || a.name.toLowerCase().indexOf(q) >= 0 || (a.supervisor || '').toLowerCase().indexOf(q) >= 0).slice(0, 80);
+    act = 0;
+    list.innerHTML = items.length ? items.map((a, i) => '<div class="opt' + (i === 0 ? ' act' : '') + '" data-i="' + i + '"><span>' + esc(a.name) + '</span><small>' + esc(a.type === 'Supervisor' ? '' : (a.supervisor || '')) + '</small></div>').join('')
+      : '<div class="empty">No match. An admin can add names in Agents.</div>';
+    list.classList.remove('hidden');
+  }
+  function pick(i) { const a = items[i]; if (!a) return; input.value = a.name; list.classList.add('hidden'); onPick(a); }
+  function move(d) {
+    const opts = list.querySelectorAll('.opt'); if (!opts.length) return;
+    opts[act].classList.remove('act'); act = (act + d + opts.length) % opts.length; opts[act].classList.add('act'); opts[act].scrollIntoView({ block: 'nearest' });
+  }
+  input.addEventListener('focus', render);
+  input.addEventListener('input', () => { onPick(null); render(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
+    else if (e.key === 'Enter') { if (!list.classList.contains('hidden')) { e.preventDefault(); pick(act); } }
+    else if (e.key === 'Escape') list.classList.add('hidden');
+  });
+  list.addEventListener('mousedown', (e) => { const o = e.target.closest('.opt'); if (o) { e.preventDefault(); pick(+o.dataset.i); } });
+  input.addEventListener('blur', () => setTimeout(() => list.classList.add('hidden'), 120));
+}
+
+/* ---------- register ---------- */
+$('regCat').querySelectorAll('button').forEach((b) => (b.onclick = () => {
+  S.cat = b.dataset.v; $('regCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+}));
+$('regType').onchange = () => {
+  const t = $('regType').value;
+  $('regAgent').disabled = !t; $('regAgent').value = ''; S.agent = null; showSup();
+  $('regAgent').placeholder = t ? 'Type to search ' + t + ' names' : 'Choose type first';
+  if (t) $('regAgent').focus();
+};
+combo('regCombo', () => S.agents.filter((a) => a.active && a.type === $('regType').value), (a) => { S.agent = a; showSup(); });
+function showSup() {
+  const a = S.agent;
+  if (!a) { $('regSup').innerHTML = ''; return; }
+  const sup = supOf(a);
+  $('regSup').innerHTML = a.type === 'Supervisor' ? 'Registering as supervisor <span class="chip">' + esc(a.name) + '</span>'
+    : sup ? 'Supervisor: <span class="chip">' + esc(sup) + '</span>' : '<span class="chip grey">No supervisor</span>';
+}
+
+function digits(v) {
+  let d = String(v || '').replace(/\D/g, '');
+  if (d.indexOf('00251') === 0) d = '0' + d.slice(5); else if (d.indexOf('251') === 0 && d.length >= 11) d = '0' + d.slice(3);
+  if (/^[79]/.test(d)) d = '0' + d;
+  return d;
+}
+function lockHtml(l, title) {
+  return '<span class="big">' + (title || 'Already claimed') + '</span>' +
+    '<dl class="kv"><dt>Agent</dt><dd>' + esc(l.via || '—') + '</dd>' +
+    (l.supervisor ? '<dt>Supervisor</dt><dd>' + esc(l.supervisor) + '</dd>' : '') +
+    '<dt>Customer</dt><dd>' + esc(l.name || '—') + ' · ' + esc(l.phone) + '</dd>' +
+    '<dt>Category</dt><dd>' + esc(l.category) + '</dd>' +
+    '<dt>Registered</dt><dd>' + esc(l.date) + '</dd>' +
+    '<dt>Locked until</dt><dd>' + esc(l.lockedUntil) + (l.daysLeft === 0 ? ' (last locked day)' : ' (' + l.daysLeft + ' more day' + (l.daysLeft === 1 ? '' : 's') + ')') + '</dd>' +
+    '<dt>Free from</dt><dd>' + esc(l.freeFrom) + '</dd></dl>';
+}
+
+let phoneT, phoneSeq = 0;
+$('regPhone').addEventListener('input', () => {
+  clearTimeout(phoneT); S.phoneState = null;
+  const d = digits($('regPhone').value), el = $('regPhoneStatus');
+  if (d.length < 8) { el.innerHTML = ''; return; }
+  if (!/^0[79]/.test(d) || (d.length !== 8 && d.length !== 10)) { msgBox(el, 'warn', 'Use the first 8 digits (0911 51 83) or the full 10-digit number.'); return; }
+  msgBox(el, 'info', '<span class="spin"></span> Checking…');
+  const seq = ++phoneSeq;
+  phoneT = setTimeout(async () => {
+    try {
+      const r = await call('checkPhone', S.token, $('regPhone').value);
+      if (seq !== phoneSeq) return;
+      if (!r.valid) { S.phoneState = 'invalid'; return msgBox(el, 'warn', esc(r.error)); }
+      if (r.lock) { S.phoneState = 'locked'; msgBox(el, 'bad', lockHtml(r.lock)); }
+      else { S.phoneState = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
+    } catch (e) { if (seq === phoneSeq) msgBox(el, 'warn', esc(e.message)); }
+  }, 450);
+});
+
+$('regForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const res = $('regResult');
+  if (!S.cat) return toast('Choose a category', true);
+  if (!$('regName').value.trim()) return toast('Enter the customer name', true);
+  if (!S.agent) return toast('Choose the agent from the list', true);
+  if (S.phoneState === 'locked') return toast('This number is already claimed', true);
+  const btn = $('regBtn'); busy(btn, true, 'Saving…');
+  try {
+    const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phone: $('regPhone').value, agentId: S.agent.id });
+    if (r.ok) {
+      res.innerHTML = '<div class="status ok" style="margin:0 0 18px"><span class="big">Registered ✓</span><dl class="kv">' +
+        '<dt>Customer</dt><dd>' + esc(r.name) + ' · ' + esc(r.phone) + '</dd><dt>Category</dt><dd>' + esc(r.category) + '</dd>' +
+        '<dt>Agent</dt><dd>' + esc(r.agent) + ' <span class="muted" style="font-weight:400">(' + esc(r.agentType) + ')</span></dd>' +
+        '<dt>Supervisor</dt><dd>' + esc(r.supervisor || '—') + '</dd><dt>Date</dt><dd>' + esc(r.date) + '</dd>' +
+        '<dt>Locked until</dt><dd>' + esc(r.lockedUntil) + '</dd></dl></div>';
+      addRecent(r);
+      $('regName').value = ''; $('regPhone').value = ''; $('regPhoneStatus').innerHTML = ''; S.phoneState = null;
+      $('regAgent').value = ''; S.agent = null; showSup(); $('regName').focus();
+    } else {
+      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, 'Not registered — number already claimed') + '</div>';
+      msgBox($('regPhoneStatus'), 'bad', lockHtml(r.lock)); S.phoneState = 'locked';
+    }
+  } catch (err) { res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + esc(err.message) + '</div>'; }
+  busy(btn, false);
+};
+const recent = [];
+function addRecent(r) {
+  recent.unshift(r);
+  $('regRecentHint').textContent = recent.length + ' customer' + (recent.length > 1 ? 's' : '') + ' registered since you logged in.';
+  $('regRecentList').innerHTML = '<div class="tbl-wrap"><table><thead><tr><th>Customer</th><th>Phone</th><th>Category</th><th>Agent</th></tr></thead><tbody>' +
+    recent.slice(0, 30).map((x) => '<tr><td>' + esc(x.name) + '</td><td class="nowrap">' + esc(x.phone) + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.agent) + '</td></tr>').join('') + '</tbody></table></div>';
+}
+
+/* ---------- check ---------- */
+$('chkForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const out = $('chkResult'), btn = e.submitter || $('chkForm').querySelector('button');
+  busy(btn, true, 'Checking…');
+  try {
+    const r = await call('checkPhone', S.token, $('chkPhone').value);
+    if (!r.valid) { msgBox(out, 'warn', esc(r.error)); }
+    else {
+      let h = r.lock ? '<div class="status bad">' + lockHtml(r.lock) + '</div>'
+        : '<div class="status ok"><span class="big">' + esc(r.formatted) + ' is free</span>No registration in the last 30 days. It can be registered now.</div>';
+      h += '<h3 style="margin:22px 0 8px;font-size:15px">History for numbers starting ' + esc(r.key.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1 $2 $3')) + '</h3>';
+      h += r.history.length ? recTable(r.history) : '<p class="muted">Never registered before.</p>';
+      out.innerHTML = h;
+    }
+  } catch (err) { msgBox(out, 'bad', esc(err.message)); }
+  busy(btn, false);
+};
+
+function statusTag(x) { return x.lockedUntil ? '<span class="tag lock">Locked to ' + esc(x.lockedUntil) + '</span>' : (x.date ? '<span class="tag free">Free</span>' : '<span class="tag off">No valid date</span>'); }
+function recTable(rows) {
+  return '<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Customer</th><th>Phone</th><th>Agent</th><th>Status</th></tr></thead><tbody>' +
+    rows.map((x) => '<tr><td class="nowrap">' + esc(x.date || '—') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + '</td><td class="nowrap">' + esc(x.phone) + '</td><td>' + esc(x.via) + '</td><td>' + statusTag(x) + '</td></tr>').join('') +
+    '</tbody></table></div>';
+}
+
+/* ---------- records ---------- */
+$('recForm').onsubmit = (e) => { e.preventDefault(); loadRecords(e.submitter); };
+async function loadRecords(btn) {
+  btn = btn || $('recForm').querySelector('button'); busy(btn, true, 'Loading…');
+  $('recCount').innerHTML = '<span class="spin"></span> Loading records…';
+  try {
+    const r = await call('listRecords', S.token, { category: $('recCat').value, days: +$('recDays').value, q: $('recQ').value, lockedOnly: $('recLocked').checked });
+    S.recLoaded = true;
+    $('recStats').innerHTML = Object.keys(r.stats.today).map((k) => '<div class="stat"><b>' + r.stats.today[k] + '</b><span>' + esc(k) + ' today · ' + r.stats.last30[k] + ' in 30 days</span></div>').join('');
+    $('recCount').textContent = r.total ? (r.total > r.shown ? 'Showing newest ' + r.shown + ' of ' + r.total + ' records. Narrow the search to see more.' : r.total + ' record' + (r.total > 1 ? 's' : '')) : 'No records match.';
+    $('recBody').innerHTML = r.rows.map((x) => '<tr><td class="nowrap">' + esc(x.date || '—') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + '</td><td class="nowrap">' + esc(x.phone) +
+      '</td><td>' + esc(x.via) + (x.type ? '<br><small class="muted">' + esc(x.type) + '</small>' : '') + '</td><td>' + esc(x.supervisor) + '</td><td>' + esc(x.enteredBy) + '</td><td>' + statusTag(x) + '</td></tr>').join('');
+  } catch (err) { $('recCount').textContent = err.message; }
+  busy(btn, false);
+}
+
+/* ---------- users ---------- */
+async function loadUsers() {
+  $('usrBody').innerHTML = '<tr><td colspan="6"><span class="spin"></span> Loading…</td></tr>';
+  try { S.users = await call('listUsers', S.token); renderUsers(); } catch (e) { $('usrBody').innerHTML = '<tr><td colspan="6">' + esc(e.message) + '</td></tr>'; }
+}
+function renderUsers() {
+  $('usrBody').innerHTML = S.users.map((u, i) => '<tr><td><b>' + esc(u.username) + '</b></td><td>' + esc(u.name) + '</td><td>' + esc(ROLE_LABEL[u.role] || u.role) + '</td><td>' +
+    (u.active ? (u.mustChange ? '<span class="tag off">Must set password</span>' : '<span class="tag free">Active</span>') : '<span class="tag off">Disabled</span>') + '</td><td class="nowrap">' + esc(u.lastLogin || '—') +
+    '</td><td class="nowrap"><button class="btn ghost small" type="button" onclick="userForm(' + i + ')">Edit</button> <button class="btn ghost small" type="button" onclick="resetPw(' + i + ')">Reset password</button></td></tr>').join('');
+}
+$('btnAddUser').onclick = () => userForm(-1);
+function roleOpts(sel) { return Object.keys(ROLE_LABEL).map((r) => '<option value="' + r + '"' + (r === sel ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join(''); }
+function userForm(i) {
+  const u = i >= 0 ? S.users[i] : null;
+  openModal('<h3>' + (u ? 'Edit user' : 'Add user') + '</h3>' +
+    '<label class="f"><span>Username</span><input type="text" id="uName" value="' + esc(u ? u.username : '') + '"' + (u ? ' disabled' : '') + ' autocomplete="off"></label>' +
+    '<label class="f"><span>Full name</span><input type="text" id="uFull" value="' + esc(u ? u.name : '') + '"></label>' +
+    '<label class="f"><span>Role</span><select id="uRole">' + roleOpts(u ? u.role : 'entry') + '</select></label>' +
+    (u ? '<label class="check" style="margin-bottom:14px"><input type="checkbox" id="uActive"' + (u.active ? ' checked' : '') + '> Active (can log in)</label>'
+       : '<label class="f"><span>Temporary password</span><input type="text" id="uPw" autocomplete="off"><small class="muted">They will be asked to change it at first login.</small></label>') +
+    '<div id="uMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="uSave" type="button">Save</button></div>');
+  $('uSave').onclick = async () => {
+    busy($('uSave'), true);
+    try {
+      S.users = await call('saveUser', S.token, { isNew: !u, username: $('uName').value, name: $('uFull').value, role: $('uRole').value, active: u ? $('uActive').checked : true, password: u ? '' : $('uPw').value });
+      renderUsers(); closeModal(); toast('User saved');
+    } catch (e) { msgBox($('uMsg'), 'bad', esc(e.message)); busy($('uSave'), false); }
+  };
+}
+function resetPw(i) {
+  const u = S.users[i];
+  openModal('<h3>Reset password for ' + esc(u.username) + '</h3><label class="f"><span>New temporary password</span><input type="text" id="rPw" autocomplete="off"></label>' +
+    '<p class="muted" style="font-size:13px">They will be asked to change it at their next login.</p><div id="rMsg"></div>' +
+    '<div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="rSave" type="button">Reset</button></div>');
+  $('rSave').onclick = async () => {
+    busy($('rSave'), true);
+    try { await call('resetUserPassword', S.token, u.username, $('rPw').value); closeModal(); toast('Password reset'); loadUsers(); }
+    catch (e) { msgBox($('rMsg'), 'bad', esc(e.message)); busy($('rSave'), false); }
+  };
+}
+
+/* ---------- agents ---------- */
+['agType', 'agQ', 'agInactive'].forEach((id) => $(id).addEventListener('input', renderAgents));
+function renderAgents() {
+  const t = $('agType').value, q = $('agQ').value.trim().toLowerCase(), inact = $('agInactive').checked;
+  const list = S.agents.filter((a) => (!t || a.type === t) && (inact || a.active) && (!q || (a.name + ' ' + a.supervisor + ' ' + a.phone).toLowerCase().indexOf(q) >= 0));
+  $('agCount').textContent = list.length + ' name' + (list.length === 1 ? '' : 's');
+  $('agBody').innerHTML = list.map((a) => '<tr><td>' + esc(a.type) + '</td><td><b>' + esc(a.name) + '</b></td><td>' + esc(a.supervisor || '—') + '</td><td class="nowrap">' + esc(a.phone) + '</td><td>' +
+    (a.active ? '<span class="tag free">Active</span>' : '<span class="tag off">Inactive</span>') + '</td><td><button class="btn ghost small" type="button" onclick="agentForm(\'' + esc(a.id) + '\')">Edit</button></td></tr>').join('');
+}
+$('btnAddAgent').onclick = () => agentForm(null);
+function agentForm(id) {
+  const a = id ? S.agents.find((x) => x.id === id) : null;
+  const sups = S.agents.filter((x) => x.type === 'Supervisor' && x.active).map((x) => x.name);
+  if (a && a.supervisor && sups.indexOf(a.supervisor) < 0) sups.push(a.supervisor);
+  openModal('<h3>' + (a ? 'Edit agent' : 'Add agent') + '</h3>' +
+    '<label class="f"><span>Type</span><select id="aType">' + S.types.map((t) => '<option' + (a && a.type === t ? ' selected' : '') + '>' + esc(t) + '</option>').join('') + '</select></label>' +
+    '<label class="f"><span>Name</span><input type="text" id="aName" value="' + esc(a ? a.name : '') + '"></label>' +
+    '<label class="f" id="aSupWrap"><span>Supervisor</span><select id="aSup"><option value="">— None —</option>' + sups.map((s) => '<option' + (a && a.supervisor === s ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
+    '<label class="f"><span>Phone (optional)</span><input type="text" id="aPhone" value="' + esc(a ? a.phone : '') + '"></label>' +
+    '<label class="check" style="margin-bottom:14px"><input type="checkbox" id="aActive"' + (!a || a.active ? ' checked' : '') + '> Active (shown in the register form)</label>' +
+    '<div id="aMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="aSave" type="button">Save</button></div>');
+  const syncSup = () => $('aSupWrap').classList.toggle('hidden', ['Sales', 'Freelancer'].indexOf($('aType').value) < 0);
+  $('aType').onchange = syncSup; syncSup();
+  $('aSave').onclick = async () => {
+    busy($('aSave'), true);
+    try {
+      const r = await call('saveAgent', S.token, { id: a ? a.id : '', type: $('aType').value, name: $('aName').value, supervisor: $('aSup').value, phone: $('aPhone').value, active: $('aActive').checked });
+      S.agents = r.agents; renderAgents(); closeModal(); toast('Agent saved');
+    } catch (e) { msgBox($('aMsg'), 'bad', esc(e.message)); busy($('aSave'), false); }
+  };
+}
+
+/* ---------- modal ---------- */
+function openModal(html) { $('modalBox').innerHTML = html; $('modal').classList.remove('hidden'); const f = $('modalBox').querySelector('input:not([disabled]),select'); if (f) f.focus(); }
+function closeModal() { $('modal').classList.add('hidden'); $('modalBox').innerHTML = ''; }
+$('modal').addEventListener('mousedown', (e) => { if (e.target === $('modal')) closeModal(); });
+
+/* ---------- boot ---------- */
+(async function boot() {
+  const t = load('mc_token');
+  if (!t) return showLogin();
+  S.token = t;
+  try { S.user = await call('whoAmI', t); S.user.mustChange ? showPw() : startApp(); }
+  catch (e) { clearSession(); showLogin(); }
+})();
+</script>
+</body>
+</html>
