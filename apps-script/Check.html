@@ -34,11 +34,11 @@
     <h1>Merit Properties</h1>
     <p class="sub">Check if a customer's number is free or already claimed.</p>
     <label for="ph">Customer phone number</label>
-    <input id="ph" type="tel" inputmode="tel" placeholder="0911 51 83" autofocus>
+    <input id="ph" type="tel" inputmode="tel" placeholder="0911 51 83  or  +971 50 123 4567" autofocus>
     <button id="b" type="submit">Check number</button>
     <div id="out"></div>
   </form>
-  <p class="note">A number stays claimed for 30 days after it is registered.<br>Enter at least the first 8 digits.</p>
+  <p class="note">A number stays claimed for 30 days after it is registered.<br>Enter at least the first 8 digits. Foreign numbers: start with + and the country code.</p>
 </div>
 <script>
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

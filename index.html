@@ -204,7 +204,7 @@
               </div>
             </label>
             <label class="f"><span>Customer name</span><input type="text" id="regName" maxlength="80"></label>
-            <label class="f"><span>Customer phone</span><input type="tel" id="regPhone" placeholder="0911 51 83 or 0911 51 83 75" inputmode="tel"></label>
+            <label class="f"><span>Customer phone</span><input type="tel" id="regPhone" placeholder="0911 51 83 75  ·  foreign: +971 50 123 4567" inputmode="tel"></label>
             <div id="regPhoneStatus"></div>
             <div class="row" style="margin-top:14px">
               <label class="f"><span>Agent type</span><select id="regType"></select></label>
@@ -233,7 +233,7 @@
         <h2>Check a phone number</h2>
         <p class="hint">See if a number is free or claimed, and its past registrations.</p>
         <form id="chkForm" class="row">
-          <label class="f"><span>Phone number</span><input type="tel" id="chkPhone" placeholder="0911 51 83" inputmode="tel"></label>
+          <label class="f"><span>Phone number</span><input type="tel" id="chkPhone" placeholder="0911 51 83  or  +971 50 123 4567" inputmode="tel"></label>
           <div class="shrink" style="margin-bottom:14px"><button class="btn primary" type="submit">Check</button></div>
         </form>
         <div id="chkResult"></div>
@@ -500,12 +500,6 @@ function showSup() {
     : sup ? 'Supervisor: <span class="chip">' + esc(sup) + '</span>' : '<span class="chip grey">No supervisor</span>';
 }
 
-function digits(v) {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.indexOf('00251') === 0) d = '0' + d.slice(5); else if (d.indexOf('251') === 0 && d.length >= 11) d = '0' + d.slice(3);
-  if (/^[79]/.test(d)) d = '0' + d;
-  return d;
-}
 function lockHtml(l, title) {
   return '<span class="big">' + (title || 'Already claimed') + '</span>' +
     '<dl class="kv"><dt>Agent</dt><dd>' + esc(l.via || '—') + '</dd>' +
@@ -520,9 +514,8 @@ function lockHtml(l, title) {
 let phoneT, phoneSeq = 0;
 $('regPhone').addEventListener('input', () => {
   clearTimeout(phoneT); S.phoneState = null;
-  const d = digits($('regPhone').value), el = $('regPhoneStatus');
-  if (d.length < 8) { el.innerHTML = ''; return; }
-  if (!/^0[79]/.test(d) || (d.length !== 8 && d.length !== 10)) { msgBox(el, 'warn', 'Use the first 8 digits (0911 51 83) or the full 10-digit number.'); return; }
+  const el = $('regPhoneStatus');
+  if ($('regPhone').value.replace(/\D/g, '').length < 8) { el.innerHTML = ''; return; }
   msgBox(el, 'info', '<span class="spin"></span> Checking…');
   const seq = ++phoneSeq;
   phoneT = setTimeout(async () => {
@@ -581,7 +574,7 @@ $('chkForm').onsubmit = async (e) => {
     else {
       let h = r.lock ? '<div class="status bad">' + lockHtml(r.lock) + '</div>'
         : '<div class="status ok"><span class="big">' + esc(r.formatted) + ' is free</span>No registration in the last 30 days. It can be registered now.</div>';
-      h += '<h3 style="margin:22px 0 8px;font-size:15px">History for numbers starting ' + esc(r.key.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1 $2 $3')) + '</h3>';
+      h += '<h3 style="margin:22px 0 8px;font-size:15px">History for ' + (r.key.charAt(0) === '+' ? esc(r.key) : 'numbers starting ' + esc(r.key.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1 $2 $3'))) + '</h3>';
       h += r.history.length ? recTable(r.history) : '<p class="muted">Never registered before.</p>';
       out.innerHTML = h;
     }

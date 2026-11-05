@@ -620,26 +620,63 @@ function phoneKeys_(v) {
 }
 
 function phoneKey_(p) {
-  const d = normDigits_(p);
-  return d && d.length >= CFG.KEY_DIGITS ? d.slice(0, CFG.KEY_DIGITS) : null;
+  const n = normPhone_(p);
+  if (!n) return null;
+  if (n.intl) return '+' + n.digits;                       // other countries: full number
+  return n.digits.length >= CFG.KEY_DIGITS ? n.digits.slice(0, CFG.KEY_DIGITS) : null;   // Ethiopia: first 8 digits
 }
 
-/** Digits in local form starting with 09/07, or null. Handles +251 and a lost leading zero. */
-function normDigits_(p) {
-  let d = String(p).replace(/\D/g, '');
-  if (d.indexOf('00251') === 0) d = '0' + d.slice(5);
-  else if (d.indexOf('251') === 0 && d.length >= 11) d = '0' + d.slice(3);
-  if (/^[79]/.test(d)) d = '0' + d;
-  return /^0[79]/.test(d) ? d : null;
-}
-
-/** Validates a newly typed number: 8 digits (last 2 hidden) or full 10 digits. */
-function parseNewPhone_(input) {
-  const d = normDigits_(input || '');
-  if (!d || (d.length !== 8 && d.length !== 10)) {
-    return { valid: false, error: 'Enter a mobile number starting with 09 or 07 — the first 8 digits (0911 51 83) or all 10.' };
+/**
+ * Normalises a phone number.
+ *  - Ethiopian (local) numbers → { digits: '0911518375', intl: false }. Handles +251 / 00251 / 251 and a lost leading 0.
+ *  - Other countries (typed with + or 00, or 11+ digits not starting with 0) → { digits: '971501234567', intl: true }.
+ */
+function normPhone_(p) {
+  const raw = String(p == null ? '' : p).trim();
+  let d = raw.replace(/\D/g, '');
+  if (!d) return null;
+  let intl = false;
+  if (/^\+/.test(raw)) intl = true;
+  else if (d.indexOf('00') === 0) { d = d.slice(2); intl = true; }
+  if (d.indexOf('251') === 0 && d.length >= 11) { d = '0' + d.slice(3); intl = false; }
+  if (!intl) {
+    if (/^[1-9]/.test(d) && d.length <= 9) d = '0' + d;      // leading 0 lost (number stored as a number)
+    else if (/^[1-9]/.test(d) && d.length >= 11) intl = true; // e.g. 971501234567 typed without +
   }
-  return { valid: true, digits: d, key: d.slice(0, CFG.KEY_DIGITS), formatted: fmtPhone_(d) };
+  if (intl) return d.length >= 7 && d.length <= 15 ? { digits: d, intl: true } : null;
+  return /^0[1-9]\d{5,}$/.test(d) ? { digits: d, intl: false } : null;
+}
+
+/** Old helper kept for search: local digits or null. */
+function normDigits_(p) {
+  const n = normPhone_(p);
+  return n && !n.intl ? n.digits : null;
+}
+
+/** Two match keys refer to the same customer. International: also when one has the last digits hidden. */
+function keyMatch_(a, b) {
+  if (a === b) return true;
+  if (a.charAt(0) !== '+' || b.charAt(0) !== '+') return false;
+  const s = a.length < b.length ? a : b, l = a.length < b.length ? b : a;
+  return s.length >= 9 && l.length - s.length <= 2 && l.indexOf(s) === 0;
+}
+
+function hasKey_(keys, key) {
+  for (let i = 0; i < keys.length; i++) if (keyMatch_(keys[i], key)) return true;
+  return false;
+}
+
+/** Validates a newly typed number. */
+function parseNewPhone_(input) {
+  const n = normPhone_(input || '');
+  if (n && n.intl) {
+    if (n.digits.length < 8) return { valid: false, error: 'That international number looks too short. Include the country code, e.g. +971 50 123 4567.' };
+    return { valid: true, digits: n.digits, intl: true, key: '+' + n.digits, formatted: '+' + n.digits };
+  }
+  if (!n || (n.digits.length !== 8 && n.digits.length !== 10)) {
+    return { valid: false, error: 'Enter an Ethiopian number as the first 8 digits (0911 51 83) or all 10, or a foreign number starting with + and the country code (+971 50 123 4567).' };
+  }
+  return { valid: true, digits: n.digits, intl: false, key: n.digits.slice(0, CFG.KEY_DIGITS), formatted: fmtPhone_(n.digits) };
 }
 
 function fmtPhone_(d) {
@@ -714,7 +751,7 @@ function dayStr_(day) {
 function findLock_(key, rows, today) {
   let best = null;
   rows.forEach(function (r) {
-    if (r.day === null || r.keys.indexOf(key) < 0) return;
+    if (r.day === null || !hasKey_(r.keys, key)) return;
     if (today - r.day <= CFG.LOCK_DAYS && (!best || r.day > best.day)) best = r;
   });
   return best;
@@ -745,7 +782,7 @@ function checkPhone(token, phone, withHistory) {
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
   if (withHistory) {
     const all = readAllClaims_();
-    out.history = all.rows.filter(function (r) { return r.keys.indexOf(p.key) >= 0; })
+    out.history = all.rows.filter(function (r) { return hasKey_(r.keys, p.key); })
       .sort(function (a, b) { return (b.day || 0) - (a.day || 0); })
       .slice(0, 15).map(function (r) { return claimView_(r, all.today); });
   }
@@ -819,13 +856,16 @@ function listRecords(token, f) {
   const today = all.today;
   const q = String(f.q || '').trim().toLowerCase();
   const qDigits = q.replace(/\D/g, '');
-  const qKey = qDigits.length >= 4 ? (normDigits_(qDigits) || qDigits) : '';
+  const qLocal = qDigits.length >= 4 ? (qDigits.indexOf('251') === 0 ? '0' + qDigits.slice(3) : /^[79]/.test(qDigits) ? '0' + qDigits : qDigits) : '';
   let rows = all.rows.filter(function (r) {
     if (f.category && f.category !== 'all' && r.category !== f.category) return false;
     if (days && (r.day === null || today - r.day >= days)) return false;
     if (f.lockedOnly && (r.day === null || today - r.day > CFG.LOCK_DAYS)) return false;
     if (!q) return true;
-    if (qKey && r.keys.some(function (k) { return k.indexOf(qKey.slice(0, CFG.KEY_DIGITS)) === 0 || qKey.indexOf(k) === 0; })) return true;
+    if (qLocal) {
+      const pd = String(r.phone).replace(/\D/g, '');
+      if (pd.indexOf(qDigits) >= 0 || pd.indexOf(qLocal) >= 0 || r.keys.some(function (k) { return qLocal.indexOf(k) === 0 || k.replace('+', '').indexOf(qDigits) === 0; })) return true;
+    }
     return (r.name + ' ' + r.via + ' ' + r.supervisor + ' ' + r.enteredBy).toLowerCase().indexOf(q) >= 0;
   });
   rows.sort(function (a, b) { return (b.day === null ? -1e9 : b.day) - (a.day === null ? -1e9 : a.day) || b.row - a.row; });
