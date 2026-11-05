@@ -31,7 +31,7 @@ const CATEGORIES = [
 
 const AGENT_TYPES = ['Sales', 'Elite Sales', 'Supervisor', 'Freelancer', 'Agent'];
 const ROLES = ['admin', 'entry', 'viewer'];
-const EXTRA_HEADERS = ['Agent Type', 'Supervisor', 'Entered By', 'Entered At', 'Edited'];
+const EXTRA_HEADERS = ['Agent Type', 'Supervisor', 'Entered By', 'Entered At', 'Edited', 'Note'];
 const AGENT_HEADERS = ['ID', 'Type', 'Name', 'Supervisor', 'Phone', 'Active'];
 const USER_HEADERS = ['Username', 'Full Name', 'Role', 'Active', 'Salt', 'Hash', 'Must Change Password', 'Created', 'Last Login'];
 
@@ -445,7 +445,7 @@ function layout_(sh, addExtras) {
   L.sn = find(function (s) { return /^(s\s*\/?\s*n|sr\.?\s*no|no\.?)$/i.test(s); });
   L.via = find(function (s) { return /via|sales|agent/i.test(s) && !/type/i.test(s); }) || (L.phone + 1);
   if (addExtras && !h[L.via - 1]) { sh.getRange(L.headerRow, L.via).setValue('Via').setFontWeight('bold'); h[L.via - 1] = 'Via'; }
-  const extraKeys = ['type', 'supervisor', 'enteredBy', 'enteredAt', 'edited'];
+  const extraKeys = ['type', 'supervisor', 'enteredBy', 'enteredAt', 'edited', 'note'];
   let next = L.via + 1;
   EXTRA_HEADERS.forEach(function (title, i) {
     let c = find(function (s) { return s.toLowerCase() === title.toLowerCase(); });
@@ -460,7 +460,7 @@ function layout_(sh, addExtras) {
     L[extraKeys[i]] = c;
     next = Math.max(next, c + 1);
   });
-  L.width = Math.max(L.phone, L.date, L.name, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited || 0, L.sn);
+  L.width = Math.max(L.phone, L.date, L.name, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited || 0, L.note || 0, L.sn);
   return L;
 }
 
@@ -482,7 +482,7 @@ function parseClaims_(cat, L, vals, firstRow, today, ssTz) {
       category: cat.key, categoryLabel: cat.label, row: lastDataRow,
       day: null, name: name, phone: phoneStr, keys: phoneKeys_(phoneRaw),
       via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
-      enteredBy: clean_(g(L.enteredBy)), enteredAt: enteredAt,
+      enteredBy: clean_(g(L.enteredBy)), enteredAt: enteredAt, note: clean_(g(L.note)),
     });
   }
   resolveDays_(cands).forEach(function (d, i) { out[i].day = d; });
@@ -538,7 +538,7 @@ function readAllClaims_() {
 /* Recent claims (last 31 days) kept in the script cache so checks don't have to open the sheet.
    Cleared when someone edits the sheet by hand (onEdit) and updated on every registration. */
 const IDX_TTL = 300;          // seconds
-const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy', 'enteredAt'];
+const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy', 'enteredAt', 'note'];
 
 function recentClaims_() {
   const today = todayDay_();
@@ -638,7 +638,7 @@ function phoneHistory(token, phone, skip, opts) {
   const found = {}, add = function (day, catKey, via, row, name, ph) {
     if (opts.category && catKey !== opts.category) return;
     if (skip && skip.catKey === catKey && Number(skip.row) === row) return;
-    if (matchReason_({ keys: rowNumbers_(ph).map(function (n) { return n.key; }), phone: ph, name: name }, item, custName) === null) return;
+    if (matchReason_({ keys: rowNumbers_(ph).map(function (n) { return n.key; }), phone: ph, name: name }, item, custName, true) === null) return;
     const id = catKey + ':' + row;
     if (!found[id]) found[id] = { day: day, catKey: catKey, via: via, row: row, name: name };
   };
@@ -823,6 +823,17 @@ function dayStr_(day) {
  * Latest claim (within 30 days) for a number. `item` is a match key string, or a parsed number
  * { key, digits, intl } — then hidden-digit matches are decided by the customer's name (custName).
  */
+/** All claims within 30 days that match (newest first). */
+function findLocks_(item, rows, today, skip, custName) {
+  const key = typeof item === 'string' ? item : item.key;
+  return rows.filter(function (r) {
+    if (r.day === null || !hasKey_(r.keys, key)) return false;
+    if (typeof item !== 'string' && !claimMatches_(r, item, custName)) return false;
+    if (skip && r.category === skip.category && r.row === skip.row) return false;
+    return today - r.day <= CFG.LOCK_DAYS;
+  }).sort(function (a, b) { return b.day - a.day || stampMs_(b.enteredAt) - stampMs_(a.enteredAt); });
+}
+
 function findLock_(item, rows, today, skip, custName) {
   const key = typeof item === 'string' ? item : item.key;
   let best = null;
@@ -865,8 +876,15 @@ function claimMatches_(row, item, custName) {
   return matchReason_(row, item, custName) !== null;
 }
 
-function matchReason_(row, item, custName) {
+/**
+ * Why a claim row matches a new number:
+ *  'number' – same number; 'hidden' – same first 8 digits and digits are hidden (counted as the same customer,
+ *  whatever name is typed); 'name' – (only when useName) hidden digits and a similar name.
+ * Rows that an admin approved as a different person ("override") only match by name.
+ */
+function matchReason_(row, item, custName, useName) {
   if (!hasKey_(row.keys, item.key)) return null;
+  if (isOverride_(row)) useName = true;
   if (!item.digits) return 'number';
   const nums = rowNumbers_(row.phone).filter(function (n) { return keyMatch_(n.key, item.key); });
   if (!nums.length) return 'number';
@@ -877,9 +895,12 @@ function matchReason_(row, item, custName) {
     if (c === 'unknown') unknown = true;
   }
   if (!unknown) return null;                                 // full numbers that differ in the last digits
-  if (custName === null || custName === undefined || !String(custName).trim()) return 'assumed';
+  if (!useName) return 'hidden';
+  if (custName === null || custName === undefined || !String(custName).trim()) return 'hidden';
   return sameCustomerName_(row.name, custName) ? 'name' : null;
 }
+
+function isOverride_(row) { return /^override/i.test(String(row.note || '')); }
 
 /**
  * Names to compare: the first name, plus any name written in brackets ("jemal(kader)" → jemal, kader).
@@ -931,7 +952,7 @@ function editDistance_(a, b) {
 
 function claimView_(r, today) {
   const v = {
-    category: r.categoryLabel, catKey: r.category, row: r.row, enteredAt: r.enteredAt || '',
+    category: r.categoryLabel, catKey: r.category, row: r.row, enteredAt: r.enteredAt || '', note: r.note || '',
     date: dayStr_(r.day), name: r.name, phone: r.phone, via: r.via,
     type: r.type, enteredBy: r.enteredBy, day: r.day,
     supervisor: r.supervisor || ((r.via.match(/\(([^)]+)\)/) || [])[1] || '').trim(),   // old rows: "name(supervisor)"
@@ -954,14 +975,16 @@ function checkPhone(token, phone, withHistory, skip, who) {
   const recent = recentClaims_();
   const custName = who && who.customerName ? String(who.customerName) : null;
   const item = { key: p.key, digits: p.digits, intl: p.intl };
-  const lockRow = findLock_(item, recent.rows, recent.today, skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null, custName);
+  const sk = skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null;
+  const agentName = who ? (who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '')) : '';
+  const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName);
+  const lockRow = blocking || findLocks_(item, recent.rows, recent.today, sk, custName)[0] || null;
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
-  if (lockRow) out.lock.match = matchReason_(lockRow, item, custName);   // 'number' | 'name' | 'assumed'
-  if (lockRow && who) {
-    const name = who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '');
-    if (!name) { /* no agent chosen yet */ }
-    out.lock.sameAgent = !!name && sameAgent_(lockRow, name);
+  if (lockRow) {
+    out.lock.match = matchReason_(lockRow, item, custName);     // 'number' | 'hidden' | 'name'
+    out.lock.sameAgent = !blocking;
   }
+
   if (withHistory) {
     const all = readAllClaims_();
     out.history = all.rows.filter(function (r) { return hasKey_(r.keys, p.key); })
@@ -999,8 +1022,13 @@ function agentFields_(agentId) {
  */
 function firstLock_(items, rows, today, skip, agentName, custName) {
   for (let i = 0; i < items.length; i++) {
-    const h = findLock_(items[i], rows, today, skip, custName);
-    if (h && !sameAgent_(h, agentName)) return h;
+    const all = findLocks_(items[i], rows, today, skip, custName);
+    let hits = all.filter(function (r) { return !sameAgent_(r, agentName); });
+    // an admin already approved this agent's customer as a different person → other claims only block if the name matches
+    if (hits.length && agentName && custName && all.some(function (r) { return sameAgent_(r, agentName) && isOverride_(r) && sameCustomerName_(r.name, custName); })) {
+      hits = hits.filter(function (r) { return sameCustomerName_(r.name, custName); });
+    }
+    if (hits.length) return hits[0];
   }
   return null;
 }
@@ -1043,8 +1071,16 @@ function register(token, data) {
     const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     const recent = recentClaims_();
     const today = recent.today;
+    let note = '';
     const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name);
-    if (hit) return { ok: false, lock: claimView_(hit, today) };
+    if (hit) {
+      const ov = data.override;
+      if (!ov) return { ok: false, lock: claimView_(hit, today), canOverride: u.role === 'admin' };
+      if (u.role !== 'admin') throw new Error('Only an admin can register a claimed number.');
+      const reason = String(ov.reason || '').trim();
+      if (reason.length < 5) throw new Error('Write the reason (e.g. "different person, confirmed by supervisor").');
+      note = 'OVERRIDE by ' + (u.name || u.username) + ': ' + reason + ' (claimed by ' + hit.via + ', ' + hit.name + ')';
+    }
 
     const sh = categorySheet_(cat, true);
     const L = layout_(sh, true);
@@ -1054,14 +1090,14 @@ function register(token, data) {
     const enteredBy = u.name || u.username, enteredAt = nowStr_();
     writeClaimRow_(sh, L, r, {
       date: Utilities.parseDate(todayStr, ssTz, 'yyyy-MM-dd'), name: name, phone: ph.formatted, via: a.via,
-      type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt, edited: '',
+      type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt, edited: '', note: note,
     });
     recent.rows.push({ day: today, keys: ph.keys, category: cat.key, categoryLabel: cat.label, row: r, name: name, phone: ph.formatted,
-      via: a.via, type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt });
+      via: a.via, type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt, note: note });
     idxPut_(recent.rows, today);
     return {
       ok: true, category: cat.label, catKey: cat.key, row: r, name: name, phone: ph.formatted, agent: a.agent.name, agentType: a.agent.type,
-      supervisor: a.supervisor, date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS), enteredAt: enteredAt,
+      supervisor: a.supervisor, date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS), enteredAt: enteredAt, override: !!note,
     };
   } finally {
     lock.releaseLock();
@@ -1074,7 +1110,7 @@ function writeClaimRow_(sh, L, r, v) {
   const vals = range.getValues()[0];
   const set = function (c, x) { if (c && x !== undefined) vals[c - 1] = x; };
   set(L.date, v.date); set(L.name, v.name); set(L.phone, v.phone); set(L.via, v.via);
-  set(L.type, v.type); set(L.supervisor, v.supervisor); set(L.enteredBy, v.enteredBy); set(L.enteredAt, v.enteredAt); set(L.edited, v.edited);
+  set(L.type, v.type); set(L.supervisor, v.supervisor); set(L.enteredBy, v.enteredBy); set(L.enteredAt, v.enteredAt); set(L.edited, v.edited); set(L.note, v.note);
   if (L.phone) sh.getRange(r, L.phone).setNumberFormat('@');
   if (L.enteredAt) sh.getRange(r, L.enteredAt).setNumberFormat('@');
   range.setValues([vals]);
@@ -1129,7 +1165,7 @@ function editRecord(token, data) {
     const cur = sh.getRange(row, 1, 1, L.width).getValues()[0];
     const g = function (c) { return c ? cur[c - 1] : ''; };
     const rec = { name: clean_(g(L.name)), phone: cellStr_(g(L.phone)), via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
-      enteredBy: clean_(g(L.enteredBy)), enteredAt: cellStr_(g(L.enteredAt)), date: g(L.date) };
+      enteredBy: clean_(g(L.enteredBy)), enteredAt: cellStr_(g(L.enteredAt)), date: g(L.date), note: clean_(g(L.note)) };
     if (rec.name !== String(data.expectName || '') || rec.phone !== String(data.expectPhone || '')) {
       throw new Error('This record was changed or moved in the sheet. Refresh the list and try again.');
     }
@@ -1160,8 +1196,8 @@ function editRecord(token, data) {
       const r2 = lastDataRow_(sh2, L2) + 1;
       if (r2 > sh2.getMaxRows()) sh2.insertRowsAfter(sh2.getMaxRows(), 50);
       writeClaimRow_(sh2, L2, r2, { date: rec.date, name: name, phone: phone, via: via, type: type, supervisor: supervisor,
-        enteredBy: rec.enteredBy, enteredAt: rec.enteredAt, edited: edited + ' (moved from ' + fromCat.label + ')' });
-      [L.date, L.name, L.phone, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited].forEach(function (c) { if (c) sh.getRange(row, c).clearContent(); });
+        enteredBy: rec.enteredBy, enteredAt: rec.enteredAt, edited: edited + ' (moved from ' + fromCat.label + ')', note: rec.note });
+      [L.date, L.name, L.phone, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited, L.note].forEach(function (c) { if (c) sh.getRange(row, c).clearContent(); });
       outCat = toCat; outRow = r2;
     }
     CacheService.getScriptCache().removeAll(['idx:meta', 'hist:meta']);

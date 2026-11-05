@@ -547,9 +547,9 @@ function bindPhone(input, el, skip, getWho, getCtx) {
         } else if (r.lock) {
           input.dataset.state = 'locked';
           const hasAgent = who && (who.agentId || who.agentName);
-          const why = r.lock.match === 'assumed'
-            ? '<div class="why">Only the first 8 digits are known, so it could be another person. <b>Type the customer\'s name</b>. If the first name is different, it will be allowed.</div>'
-            : r.lock.match === 'name' ? '<div class="why">Same first 8 digits and a similar name (<b>' + esc(r.lock.name) + '</b>), so it is treated as the same customer.</div>' : '';
+          const why = r.lock.match === 'hidden' || r.lock.match === 'name'
+            ? '<div class="why">Same first 8 digits. With hidden digits this counts as the same customer, whatever name is typed.' +
+              (S.user.role === 'admin' ? ' If it really is a different person, you can use <b>Register anyway</b> after submitting.' : ' If it really is a different person, ask an admin.') + '</div>' : '';
           msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
         } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
         showHistory(el, input.value, skip, () => my === seq, getCtx);
@@ -607,7 +607,7 @@ $('regForm').onsubmit = async (e) => {
   if (!$('regName').value.trim()) return toast('Enter the customer name', true);
   if (!S.agent) return toast('Choose the agent from the list', true);
   if (!regPhones().length) return toast('Enter the customer phone number', true);
-  if (anyLocked('#tRegister')) return toast('A phone number is already claimed', true);
+  if (anyLocked('#tRegister') && S.user.role !== 'admin') return toast('A phone number is already claimed', true);
   const btn = $('regBtn'); busy(btn, true, 'Saving…');
   try {
     const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent.id });
@@ -622,12 +622,35 @@ $('regForm').onsubmit = async (e) => {
       $('regExtraPhones').innerHTML = ''; syncRegAdd();
       $('regAgent').value = ''; S.agent = null; showSup(); $('regName').focus();
     } else {
-      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, 'Not registered — number already claimed') + '</div>';
+      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, 'Not registered — number already claimed') +
+        (r.canOverride ? '<div class="why">Admin: if this is a different person, you can still register them.<br><button class="btn ghost small" type="button" id="ovBtn" style="margin-top:8px">Register anyway…</button></div>' : '') + '</div>';
+      if (r.canOverride) $('ovBtn').onclick = () => overrideRegister(r.lock);
 
     }
   } catch (err) { res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + esc(err.message) + '</div>'; }
   busy(btn, false);
 };
+/* Admin: register even though the number is claimed (different person). The reason is saved in the Note column. */
+function overrideRegister(lock) {
+  openModal('<h3>Register anyway?</h3>' +
+    '<p style="font-size:14px;margin:-6px 0 14px">This number is claimed by <b>' + esc(lock.via) + '</b> for <b>' + esc(lock.name) + '</b> until ' + esc(lock.lockedUntil) + '. ' +
+    'Only continue if you have confirmed it is a <b>different person</b>.</p>' +
+    '<label class="f"><span>Reason (saved in the sheet)</span><input type="text" id="ovReason" maxlength="150" placeholder="e.g. different person, confirmed with supervisor Kassa"></label>' +
+    '<div id="ovMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="ovSave" type="button">Register anyway</button></div>');
+  $('ovSave').onclick = async () => {
+    if ($('ovReason').value.trim().length < 5) return msgBox($('ovMsg'), 'bad', 'Write the reason.');
+    busy($('ovSave'), true, 'Saving…');
+    try {
+      const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent ? S.agent.id : '', override: { reason: $('ovReason').value } });
+      closeModal();
+      if (r.ok) {
+        $('regResult').innerHTML = '<div class="status ok" style="margin:0 0 18px"><span class="big">Registered (admin override) ✓</span>' + esc(r.name) + ' · ' + esc(r.phone) + ' · ' + esc(r.category) + ' · ' + esc(r.agent) + '</div>';
+        loadMine(); $('regName').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = ''; $('regExtraPhones').innerHTML = ''; syncRegAdd();
+      }
+    } catch (e) { msgBox($('ovMsg'), 'bad', esc(e.message)); busy($('ovSave'), false); }
+  };
+}
+
 /* ---------- my entries + edit ---------- */
 S.mine = [];
 async function loadMine() {
@@ -728,7 +751,7 @@ async function loadRecords(btn) {
     $('recCount').textContent = r.total ? (r.total > r.shown ? 'Showing newest ' + r.shown + ' of ' + r.total + ' records. Narrow the search to see more.' : r.total + ' record' + (r.total > 1 ? 's' : '')) : 'No records match.';
     S.recRows = r.rows;
     $('recBody').innerHTML = r.rows.map((x, i) => '<tr><td class="nowrap">' + esc(x.date || '—') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + '</td><td class="nowrap">' + esc(x.phone) +
-      '</td><td>' + esc(x.via) + (x.type ? '<br><small class="muted">' + esc(x.type) + '</small>' : '') + '</td><td>' + esc(x.supervisor) + '</td><td>' + esc(x.enteredBy) + '</td><td>' + statusTag(x) + '</td><td>' +
+      '</td><td>' + esc(x.via) + (x.type ? '<br><small class="muted">' + esc(x.type) + '</small>' : '') + (x.note ? '<br><small class="tag lock" title="' + esc(x.note) + '">admin override</small>' : '') + '</td><td>' + esc(x.supervisor) + '</td><td>' + esc(x.enteredBy) + '</td><td>' + statusTag(x) + '</td><td>' +
       (r.canEdit ? '<button class="btn ghost small" type="button" onclick="openEdit(S.recRows[' + i + '])">Edit</button>' : '') + '</td></tr>').join('');
   } catch (err) { $('recCount').textContent = err.message; }
   busy(btn, false);
