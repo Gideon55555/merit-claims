@@ -75,6 +75,7 @@
   .combo .opt { padding: 9px 12px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
   .combo .opt small { color: var(--muted); }
   .combo .opt.act, .combo .opt:hover { background: var(--brand-soft); }
+  .combo .opt.add { color: var(--brand); font-weight: 600; border-top: 1px solid var(--line); }
   .combo .empty { padding: 10px 12px; color: var(--muted); }
   .chip { display: inline-block; background: var(--brand-soft); color: var(--brand); padding: 3px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; }
   .chip.grey { background: #eef1f3; color: #44525e; }
@@ -381,18 +382,27 @@ function fillTypeSelects() {
 }
 function supOf(a) { return a.type === 'Supervisor' ? a.name : a.supervisor; }
 
-function combo(rootId, getItems, onPick) {
+function combo(rootId, getItems, onPick, onAdd) {
   const root = $(rootId), input = root.querySelector('input'), list = root.querySelector('.list');
   let items = [], act = 0;
   function render() {
-    const q = input.value.trim().toLowerCase();
+    const q = input.value.trim().toLowerCase(), raw = input.value.trim().replace(/\s+/g, ' ');
     items = getItems().filter((a) => !q || a.name.toLowerCase().indexOf(q) >= 0 || (a.supervisor || '').toLowerCase().indexOf(q) >= 0).slice(0, 80);
+    const exact = items.some((a) => a.name.toLowerCase() === q);
+    if (onAdd) items.push({ __add: true, name: raw });
     act = 0;
-    list.innerHTML = items.length ? items.map((a, i) => '<div class="opt' + (i === 0 ? ' act' : '') + '" data-i="' + i + '"><span>' + esc(a.name) + '</span><small>' + esc(a.type === 'Supervisor' ? '' : (a.supervisor || '')) + '</small></div>').join('')
-      : '<div class="empty">No match. An admin can add names in Agents.</div>';
+    list.innerHTML = items.map((a, i) => a.__add
+      ? '<div class="opt add' + (i === 0 ? ' act' : '') + '" data-i="' + i + '"><span>+ ' + (raw && !exact ? 'Add “' + esc(raw) + '” as a new person' : 'Add a new person') + '</span><small>not on the list?</small></div>'
+      : '<div class="opt' + (i === 0 ? ' act' : '') + '" data-i="' + i + '"><span>' + esc(a.name) + '</span><small>' + esc(a.type === 'Supervisor' ? '' : (a.supervisor || '')) + '</small></div>').join('')
+      || '<div class="empty">No match.</div>';
     list.classList.remove('hidden');
   }
-  function pick(i) { const a = items[i]; if (!a) return; input.value = a.name; list.classList.add('hidden'); onPick(a); }
+  function pick(i) {
+    const a = items[i]; if (!a) return;
+    list.classList.add('hidden');
+    if (a.__add) { onAdd(a.name); return; }
+    input.value = a.name; onPick(a);
+  }
   function move(d) {
     const opts = list.querySelectorAll('.opt'); if (!opts.length) return;
     opts[act].classList.remove('act'); act = (act + d + opts.length) % opts.length; opts[act].classList.add('act'); opts[act].scrollIntoView({ block: 'nearest' });
@@ -419,7 +429,42 @@ $('regType').onchange = () => {
   $('regAgent').placeholder = t ? 'Type to search ' + t + ' names' : 'Choose type first';
   if (t) $('regAgent').focus();
 };
-combo('regCombo', () => S.agents.filter((a) => a.active && a.type === $('regType').value), (a) => { S.agent = a; showSup(); });
+combo('regCombo', () => S.agents.filter((a) => a.active && a.type === $('regType').value), (a) => { S.agent = a; showSup(); }, quickAddAgent);
+
+/* Add a person who is not on the list, straight from the Register form */
+function quickAddAgent(name) {
+  const type0 = $('regType').value || 'Sales';
+  const sups = S.agents.filter((x) => x.type === 'Supervisor' && x.active).map((x) => x.name);
+  openModal('<h3>Add a new person</h3>' +
+    '<p class="muted" style="margin:-8px 0 16px;font-size:13.5px">They will be added to the list and selected for this registration.</p>' +
+    '<label class="f"><span>Full name</span><input type="text" id="qName" maxlength="60" value="' + esc(name) + '"></label>' +
+    '<label class="f"><span>Role</span><select id="qType">' + S.types.map((t) => '<option' + (t === type0 ? ' selected' : '') + '>' + esc(t) + '</option>').join('') + '</select></label>' +
+    '<label class="f" id="qSupWrap"><span>Supervisor</span><select id="qSup"><option value="">Choose supervisor…</option>' + sups.map((x) => '<option>' + esc(x) + '</option>').join('') + '</select></label>' +
+    '<label class="f"><span>Phone (optional)</span><input type="text" id="qPhone" inputmode="tel"></label>' +
+    '<div id="qMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="qSave" type="button">Add and select</button></div>');
+  const sync = () => {
+    const t = $('qType').value, show = t === 'Sales' || t === 'Freelancer';
+    $('qSupWrap').classList.toggle('hidden', !show);
+    $('qSupWrap').querySelector('span').textContent = t === 'Sales' ? 'Supervisor' : 'Supervisor (optional)';
+  };
+  $('qType').onchange = sync; sync();
+  if (name) setTimeout(() => $('qType').focus(), 0);
+  $('qSave').onclick = async () => {
+    const t = $('qType').value;
+    if (!$('qName').value.trim()) return msgBox($('qMsg'), 'bad', 'Enter the full name.');
+    if (t === 'Sales' && !$('qSup').value) return msgBox($('qMsg'), 'bad', 'Choose their supervisor.');
+    busy($('qSave'), true, 'Adding…');
+    try {
+      const r = await call('addAgentQuick', S.token, { type: t, name: $('qName').value, supervisor: $('qSup').value, phone: $('qPhone').value });
+      S.agents = r.agents;
+      if (S.user.role === 'admin') renderAgents();
+      $('regType').value = r.agent.type; $('regAgent').disabled = false;
+      $('regAgent').placeholder = 'Type to search ' + r.agent.type + ' names';
+      $('regAgent').value = r.agent.name; S.agent = r.agent; showSup();
+      closeModal(); toast('“' + r.agent.name + '” added');
+    } catch (e) { msgBox($('qMsg'), 'bad', esc(e.message)); busy($('qSave'), false); }
+  };
+}
 function showSup() {
   const a = S.agent;
   if (!a) { $('regSup').innerHTML = ''; return; }

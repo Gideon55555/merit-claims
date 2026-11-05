@@ -55,7 +55,7 @@ function doPost(e) {
   const API = {
     login: login, logout: logout, whoAmI: whoAmI, changePassword: changePassword,
     getAgents: getAgents, checkPhone: checkPhone, register: register, listRecords: listRecords,
-    listUsers: listUsers, saveUser: saveUser, resetUserPassword: resetUserPassword, saveAgent: saveAgent,
+    listUsers: listUsers, saveUser: saveUser, resetUserPassword: resetUserPassword, saveAgent: saveAgent, addAgentQuick: addAgentQuick,
     publicCheck: publicCheck,
   };
   let out;
@@ -326,6 +326,22 @@ function getAgents(token) {
 
 function saveAgent(token, data) {
   auth_(token, ['admin']);
+  saveAgentCore_(data, '');
+  return getAgents(token);
+}
+
+/**
+ * Add a new person straight from the Register form (admin + data entry).
+ * Only adds — editing existing names stays admin-only. If the name already exists, that entry is returned.
+ */
+function addAgentQuick(token, data) {
+  const u = auth_(token, ['admin', 'entry']);
+  data = { type: data.type, name: data.name, supervisor: data.supervisor, phone: data.phone, active: true };
+  const agent = saveAgentCore_(data, u.name || u.username, true);
+  return { agent: agent, agents: getAgents(token).agents };
+}
+
+function saveAgentCore_(data, addedBy, reuseExisting) {
   const lock = LockService.getScriptLock(); lock.waitLock(20000);
   try {
     const type = String(data.type || '');
@@ -335,24 +351,32 @@ function saveAgent(token, data) {
     const active = data.active !== false;
     if (AGENT_TYPES.indexOf(type) < 0) throw new Error('Choose a type.');
     if (!name) throw new Error('Name is required.');
+    if (name.length > 60) throw new Error('Name is too long.');
     if (type === 'Sales' && !supervisor) throw new Error('Sales agents need a supervisor.');
     if (type === 'Elite Sales' || type === 'Supervisor' || type === 'Agent') supervisor = '';
     const all = readAgents_();
+    if (supervisor && !all.some(function (a) { return a.type === 'Supervisor' && a.name === supervisor; })) throw new Error('Choose a supervisor from the list.');
     const dup = all.filter(function (a) { return a.type === type && a.name.toLowerCase() === name.toLowerCase() && a.id !== data.id; })[0];
-    if (dup) throw new Error('"' + name + '" already exists under ' + type + '.');
+    if (dup) {
+      if (reuseExisting && dup.active) { delete dup.row; return dup; }
+      throw new Error('"' + name + '" already exists under ' + type + (dup.active ? '.' : ' (inactive — an admin can turn it back on in Agents).'));
+    }
     const sh = agentsSheet_();
     if (data.id) {
       const a = all.filter(function (x) { return x.id === data.id; })[0];
       if (!a) throw new Error('Agent not found.');
       sh.getRange(a.row, 5).setNumberFormat('@');
       sh.getRange(a.row, 2, 1, 5).setValues([[type, name, supervisor, phone, active]]);
-    } else {
-      const maxId = all.reduce(function (m, a) { return Math.max(m, Number(a.id.replace(/\D/g, '')) || 0); }, 0);
-      const row = sh.getLastRow() + 1;
-      sh.getRange(row, 5).setNumberFormat('@');
-      sh.getRange(row, 1, 1, 6).setValues([['A' + (maxId + 1), type, name, supervisor, phone, active]]);
+      return { id: a.id, type: type, name: name, supervisor: supervisor, phone: phone, active: active };
     }
-    return getAgents(token);
+    const maxId = all.reduce(function (m, a) { return Math.max(m, Number(a.id.replace(/\D/g, '')) || 0); }, 0);
+    const id = 'A' + (maxId + 1);
+    const row = sh.getLastRow() + 1;
+    if (!String(sh.getRange(1, 7).getValue())) sh.getRange(1, 7, 1, 2).setValues([['Added By', 'Added At']]).setFontWeight('bold');
+    sh.getRange(row, 5).setNumberFormat('@');
+    sh.getRange(row, 8).setNumberFormat('@');
+    sh.getRange(row, 1, 1, 8).setValues([[id, type, name, supervisor, phone, active, addedBy || '', nowStr_()]]);
+    return { id: id, type: type, name: name, supervisor: supervisor, phone: phone, active: active };
   } finally { lock.releaseLock(); }
 }
 
