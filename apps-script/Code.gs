@@ -755,7 +755,8 @@ function findLock_(key, rows, today, skip) {
   rows.forEach(function (r) {
     if (r.day === null || !hasKey_(r.keys, key)) return;
     if (skip && r.category === skip.category && r.row === skip.row) return;   // the record being edited
-    if (today - r.day <= CFG.LOCK_DAYS && (!best || r.day > best.day)) best = r;
+    if (today - r.day > CFG.LOCK_DAYS) return;
+    if (!best || r.day > best.day || (r.day === best.day && stampMs_(r.enteredAt) >= stampMs_(best.enteredAt))) best = r;   // same day: newest entry wins
   });
   return best;
 }
@@ -777,13 +778,18 @@ function claimView_(r, today) {
 
 /* ───────────────────────── Check + Register ───────────────────────── */
 
-function checkPhone(token, phone, withHistory, skip) {
+/** who = { agentId } or { agentName }: the agent this number would be registered for (optional). */
+function checkPhone(token, phone, withHistory, skip, who) {
   auth_(token);
   const p = parseNewPhone_(phone);
   if (!p.valid) return p;
   const recent = recentClaims_();
   const lockRow = findLock_(p.key, recent.rows, recent.today, skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null);
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
+  if (lockRow && who) {
+    const name = who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '');
+    out.lock.sameAgent = !!name && sameAgent_(lockRow, name);
+  }
   if (withHistory) {
     const all = readAllClaims_();
     out.history = all.rows.filter(function (r) { return hasKey_(r.keys, p.key); })
@@ -815,9 +821,38 @@ function agentFields_(agentId) {
   return { agent: agent, supervisor: supervisor || '', via: agent.name + (supervisor && agent.type !== 'Supervisor' ? ' (' + supervisor + ')' : '') };
 }
 
-function firstLock_(keys, rows, today, skip) {
-  for (let i = 0; i < keys.length; i++) { const h = findLock_(keys[i], rows, today, skip); if (h) return h; }
+/**
+ * First claim that blocks these numbers. A claim by the SAME agent does not block:
+ * the agent who owns the customer may register them again (e.g. Expecting → Office Visit → Site Visit).
+ */
+function firstLock_(keys, rows, today, skip, agentName) {
+  for (let i = 0; i < keys.length; i++) {
+    const h = findLock_(keys[i], rows, today, skip);
+    if (h && !sameAgent_(h, agentName)) return h;
+  }
   return null;
+}
+
+/** Name used for matching agents: lower case, letters/digits only, "(supervisor)" removed. */
+function agentKey_(s) {
+  return String(s || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9\u1200-\u137f]/g, '');
+}
+
+/** Does this claim row belong to the agent with this name? Old hand-typed rows often hold only the first name. */
+function sameAgent_(row, agentName) {
+  const a = agentKey_(row.via), b = agentKey_(agentName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (!row.type) {                                     // typed by hand before this system: "abdi", "betlham alemu(tinsu)"
+    const first = agentKey_(String(agentName).trim().split(/\s+/)[0]);
+    if (first && a === first) return true;
+  }
+  return false;
+}
+
+function agentNameById_(agentId) {
+  const a = readAgents_().filter(function (x) { return x.id === agentId; })[0];
+  return a ? a.name : '';
 }
 
 function register(token, data) {
@@ -836,7 +871,7 @@ function register(token, data) {
     const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     const recent = recentClaims_();
     const today = recent.today;
-    const hit = firstLock_(ph.keys, recent.rows, today);
+    const hit = firstLock_(ph.keys, recent.rows, today, null, a.agent.name);
     if (hit) return { ok: false, lock: claimView_(hit, today) };
 
     const sh = categorySheet_(cat, true);
@@ -895,7 +930,7 @@ function listMyEntries(token) {
     .slice(0, 60).map(function (r) { return claimView_(r, recent.today); });
 }
 
-function stampMs_(s) { try { return Utilities.parseDate(s, CFG.TZ, 'dd/MM/yyyy HH:mm').getTime(); } catch (e) { return 0; } }
+function stampMs_(s) { if (!s) return 0; try { return Utilities.parseDate(s, CFG.TZ, 'dd/MM/yyyy HH:mm').getTime(); } catch (e) { return 0; } }
 
 /**
  * Fix a registration. data = { catKey, row, expectName, expectPhone, category, name, phones, agentId (optional) }.
@@ -939,8 +974,8 @@ function editRecord(token, data) {
 
     const recent = recentClaims_();
     const today = recent.today;
-    if (!unchanged) {
-      const hit = firstLock_(keys, recent.rows, today, { category: fromCat.key, row: row });
+    if (!unchanged || data.agentId) {
+      const hit = firstLock_(keys, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim());
       if (hit) return { ok: false, lock: claimView_(hit, today) };
     }
     const edited = (u.name || u.username) + ', ' + nowStr_();

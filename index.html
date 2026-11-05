@@ -201,7 +201,7 @@
       <div class="grid2">
         <div class="card">
           <h2>Register a customer</h2>
-          <p class="hint">A number can only be claimed once every 30 days, across all three categories.</p>
+          <p class="hint">Once registered, a number belongs to that agent for 30 days, across all three categories. Only the same agent can register the customer again (e.g. Expecting → Office Visit).</p>
           <form id="regForm" autocomplete="off">
             <label class="f"><span>Category</span>
               <div class="seg" id="regCat">
@@ -466,7 +466,7 @@ $('regType').onchange = () => {
   $('regAgent').placeholder = t ? 'Type to search ' + t + ' names' : 'Choose type first';
   if (t) $('regAgent').focus();
 };
-combo('regCombo', () => S.agents.filter((a) => a.active && a.type === $('regType').value), (a) => { S.agent = a; showSup(); }, quickAddAgent);
+combo('regCombo', () => S.agents.filter((a) => a.active && a.type === $('regType').value), (a) => { const was = S.agent; S.agent = a; showSup(); if ((was && was.id) !== (a && a.id)) recheckPhones('#tRegister'); }, quickAddAgent);
 
 /* Add a person who is not on the list, straight from the Register form */
 function quickAddAgent(name) {
@@ -497,7 +497,7 @@ function quickAddAgent(name) {
       if (S.user.role === 'admin') renderAgents();
       $('regType').value = r.agent.type; $('regAgent').disabled = false;
       $('regAgent').placeholder = 'Type to search ' + r.agent.type + ' names';
-      $('regAgent').value = r.agent.name; S.agent = r.agent; showSup();
+      $('regAgent').value = r.agent.name; S.agent = r.agent; showSup(); recheckPhones('#tRegister');
       closeModal(); toast('“' + r.agent.name + '” added');
     } catch (e) { msgBox($('qMsg'), 'bad', esc(e.message)); busy($('qSave'), false); }
   };
@@ -522,7 +522,7 @@ function lockHtml(l, title) {
 }
 
 /* Live "is this number free?" check for any phone input. skip = record being edited (not counted as a conflict). */
-function bindPhone(input, el, skip) {
+function bindPhone(input, el, skip, getWho) {
   let t, seq = 0;
   input.addEventListener('input', () => {
     clearTimeout(t); input.dataset.state = '';
@@ -531,31 +531,40 @@ function bindPhone(input, el, skip) {
     const my = ++seq;
     t = setTimeout(async () => {
       try {
-        const r = await call('checkPhone', S.token, input.value, false, skip || null);
+        const who = getWho ? getWho() : null;
+        const r = await call('checkPhone', S.token, input.value, false, skip || null, who);
         if (my !== seq) return;
         if (!r.valid) { input.dataset.state = 'invalid'; return msgBox(el, 'warn', esc(r.error)); }
-        if (r.lock) { input.dataset.state = 'locked'; msgBox(el, 'bad', lockHtml(r.lock)); }
+        if (r.lock && r.lock.sameAgent) {
+          input.dataset.state = 'free';
+          msgBox(el, 'ok', '<b>Same agent ✓</b> ' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) + '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + '. They can register this customer again.');
+        } else if (r.lock) {
+          input.dataset.state = 'locked';
+          msgBox(el, 'bad', lockHtml(r.lock) + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (who ? '' : ' If it is them, choose them as the agent below.') + '</div>');
+        }
         else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
     }, 450);
   });
 }
 /* Adds an extra phone input (with remove button) to a container. */
-function addPhoneRow(container, value, skip, onChange) {
+function addPhoneRow(container, value, skip, onChange, getWho) {
   const wrap = document.createElement('div');
   wrap.innerHTML = '<div class="phone-row"><input type="tel" class="reg-phone" inputmode="tel" placeholder="Another number"><button type="button" class="xbtn" title="Remove">×</button></div><div class="pstat"></div>';
   container.appendChild(wrap);
   const inp = wrap.querySelector('input');
   inp.value = value || '';
-  bindPhone(inp, wrap.querySelector('.pstat'), skip);
+  bindPhone(inp, wrap.querySelector('.pstat'), skip, getWho);
   wrap.querySelector('.xbtn').onclick = () => { wrap.remove(); if (onChange) onChange(); };
   if (onChange) onChange();
   return inp;
 }
 const MAX_PHONES = 3;
-bindPhone($('regPhone'), $('regPhoneStatus'));
+const regWho = () => (S.agent ? { agentId: S.agent.id } : null);
+bindPhone($('regPhone'), $('regPhoneStatus'), null, regWho);
 function syncRegAdd() { $('regAddPhone').disabled = document.querySelectorAll('#tRegister .reg-phone').length >= MAX_PHONES; }
-$('regAddPhone').onclick = () => { addPhoneRow($('regExtraPhones'), '', null, syncRegAdd).focus(); };
+$('regAddPhone').onclick = () => { addPhoneRow($('regExtraPhones'), '', null, syncRegAdd, regWho).focus(); };
+function recheckPhones(scope) { document.querySelectorAll(scope + ' .reg-phone').forEach((i) => { if (i.value.replace(/\D/g, '').length >= 8) i.dispatchEvent(new Event('input')); }); }
 function regPhones() { return Array.from(document.querySelectorAll('#tRegister .reg-phone')).map((i) => i.value.trim()).filter(Boolean); }
 function anyLocked(scope) { return Array.from(document.querySelectorAll(scope + ' .reg-phone')).some((i) => i.dataset.state === 'locked'); }
 
@@ -621,12 +630,14 @@ function openEdit(rec) {
   const phones = String(rec.phone || '').split(' / ').filter(Boolean);
   const box = $('ePhones');
   const syncAdd = () => { $('eAddPhone').disabled = box.querySelectorAll('.reg-phone').length >= MAX_PHONES; const xs = box.querySelectorAll('.xbtn'); xs.forEach((x) => (x.style.visibility = xs.length > 1 ? 'visible' : 'hidden')); };
-  (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd));
-  $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd).focus();
+  const eWho = () => (agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() });
+  (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd, eWho));
+  $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd, eWho).focus();
   $('eChangeAgent').onclick = () => { $('eAgentPick').classList.remove('hidden'); $('eAgentNow').classList.add('hidden'); if (rec.type && S.types.indexOf(rec.type) >= 0) { $('eType').value = rec.type; $('eType').onchange(); } };
   $('eType').onchange = () => { const t = $('eType').value; $('eAgent').disabled = !t; $('eAgent').value = ''; agent = null; $('eSup').innerHTML = ''; $('eAgent').placeholder = t ? 'Type to search ' + t + ' names' : 'Choose type first'; };
   combo('eCombo', () => S.agents.filter((a) => a.active && a.type === $('eType').value), (a) => {
-    agent = a; const sup = a ? supOf(a) : '';
+    const was = agent; agent = a; const sup = a ? supOf(a) : '';
+    if ((was && was.id) !== (a && a.id)) recheckPhones('#ePhones');
     $('eSup').innerHTML = !a ? '' : a.type === 'Supervisor' ? '' : sup ? 'Supervisor: <span class="chip">' + esc(sup) + '</span>' : '<span class="chip grey">No supervisor</span>';
   });
   $('eSave').onclick = async () => {
