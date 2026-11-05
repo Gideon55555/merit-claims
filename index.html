@@ -576,7 +576,7 @@ $('chkForm').onsubmit = async (e) => {
   const out = $('chkResult'), btn = e.submitter || $('chkForm').querySelector('button');
   busy(btn, true, 'Checking…');
   try {
-    const r = await call('checkPhone', S.token, $('chkPhone').value);
+    const r = await call('checkPhone', S.token, $('chkPhone').value, true);
     if (!r.valid) { msgBox(out, 'warn', esc(r.error)); }
     else {
       let h = r.lock ? '<div class="status bad">' + lockHtml(r.lock) + '</div>'

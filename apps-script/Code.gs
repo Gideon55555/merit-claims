@@ -136,6 +136,7 @@ function setup() {
     createUser_('admin', 'Administrator', 'admin', 'ChangeMe123', true);
     msgs.push('Admin user created → username: admin  password: ChangeMe123 (must be changed at first login)');
   }
+  clearCaches_();
   Logger.log(msgs.join('\n'));
   return msgs.join('\n');
 }
@@ -169,7 +170,7 @@ function login(username, password) {
     throw new Error('Wrong username or password.');
   }
   cache.remove(failKey);
-  usersSheet_().getRange(u.row, 9).setValue(nowStr_());
+  try { usersSheet_().getRange(userRow_(u.username), 9).setValue(nowStr_()); cache.remove('users'); } catch (e) {}
   const token = Utilities.getUuid() + Utilities.getUuid();
   cache.put('sess:' + token, u.username, CFG.SESSION_SECONDS);
   return { token: token, user: publicUser_(u) };
@@ -227,6 +228,14 @@ function usersSheet_() {
 }
 
 function readUsers_() {
+  const c = CacheService.getScriptCache(), hit = c.get('users');
+  if (hit) return JSON.parse(hit);
+  const list = readUsersSheet_();
+  c.put('users', JSON.stringify(list), 300);
+  return list;
+}
+
+function readUsersSheet_() {
   const sh = usersSheet_();
   const n = sh.getLastRow() - 1;
   if (n < 1) return [];
@@ -251,11 +260,20 @@ function publicUser_(u) {
 function createUser_(username, name, role, pw, mustChange) {
   const salt = Utilities.getUuid();
   usersSheet_().appendRow([username, name, role, true, salt, hash_(pw, salt), mustChange, nowStr_(), '']);
+  CacheService.getScriptCache().remove('users');
+}
+
+/** Current sheet row of a user, read fresh from the sheet (never from cache) before writing. */
+function userRow_(username) {
+  const u = readUsersSheet_().filter(function (x) { return x.username === username; })[0];
+  if (!u) throw new Error('User not found.');
+  return u.row;
 }
 
 function setPassword_(u, pw, mustChange) {
   const salt = Utilities.getUuid();
-  usersSheet_().getRange(u.row, 5, 1, 3).setValues([[salt, hash_(pw, salt), mustChange]]);
+  usersSheet_().getRange(userRow_(u.username), 5, 1, 3).setValues([[salt, hash_(pw, salt), mustChange]]);
+  CacheService.getScriptCache().remove('users');
 }
 
 function listUsers(token) {
@@ -283,7 +301,8 @@ function saveUser(token, data) {
     } else {
       if (!existing) throw new Error('User not found.');
       if (existing.username === me.username && (role !== 'admin' || !active)) throw new Error('You cannot remove your own admin access.');
-      usersSheet_().getRange(existing.row, 2, 1, 3).setValues([[name, role, active]]);
+      usersSheet_().getRange(userRow_(existing.username), 2, 1, 3).setValues([[name, role, active]]);
+      CacheService.getScriptCache().remove('users');
     }
     return listUsers(token);
   } finally { lock.releaseLock(); }
@@ -307,6 +326,15 @@ function agentsSheet_() {
 }
 
 function readAgents_() {
+  const c = CacheService.getScriptCache(), hit = c.get('agents');
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  const list = readAgentsSheet_();
+  const str = JSON.stringify(list);
+  if (str.length < 90000) c.put('agents', str, 300);
+  return list;
+}
+
+function readAgentsSheet_() {
   const sh = agentsSheet_();
   const n = sh.getLastRow() - 1;
   if (n < 1) return [];
@@ -354,7 +382,8 @@ function saveAgentCore_(data, addedBy, reuseExisting) {
     if (name.length > 60) throw new Error('Name is too long.');
     if (type === 'Sales' && !supervisor) throw new Error('Sales agents need a supervisor.');
     if (type === 'Elite Sales' || type === 'Supervisor' || type === 'Agent') supervisor = '';
-    const all = readAgents_();
+    const all = readAgentsSheet_();
+    CacheService.getScriptCache().remove('agents');
     if (supervisor && !all.some(function (a) { return a.type === 'Supervisor' && a.name === supervisor; })) throw new Error('Choose a supervisor from the list.');
     const dup = all.filter(function (a) { return a.type === type && a.name.toLowerCase() === name.toLowerCase() && a.id !== data.id; })[0];
     if (dup) {
@@ -377,7 +406,7 @@ function saveAgentCore_(data, addedBy, reuseExisting) {
     sh.getRange(row, 8).setNumberFormat('@');
     sh.getRange(row, 1, 1, 8).setValues([[id, type, name, supervisor, phone, active, addedBy || '', nowStr_()]]);
     return { id: id, type: type, name: name, supervisor: supervisor, phone: phone, active: active };
-  } finally { lock.releaseLock(); }
+  } finally { CacheService.getScriptCache().remove('agents'); lock.releaseLock(); }
 }
 
 /* ───────────────────────── Category tabs ───────────────────────── */
@@ -433,37 +462,67 @@ function layout_(sh, addExtras) {
   return L;
 }
 
-/** Reads every claim row of a category tab. */
+/** Turns raw sheet values (starting at sheet row firstRow) into claim objects. */
+function parseClaims_(cat, L, vals, firstRow, today, ssTz) {
+  const out = [], cands = [];
+  let lastDataRow = 0;
+  for (let i = 0; i < vals.length; i++) {
+    const r = vals[i];
+    const g = function (c) { return c ? r[c - 1] : ''; };
+    const name = clean_(g(L.name)), phoneRaw = g(L.phone);
+    const phoneStr = cellStr_(phoneRaw);
+    if (!name && !phoneStr) continue;
+    lastDataRow = firstRow + i;
+    const enteredAt = cellStr_(g(L.enteredAt));
+    const stamp = enteredAt ? cellDayCands_(enteredAt, ssTz, today) : [];   // set by this system: exact
+    cands.push(stamp.length ? stamp : cellDayCands_(g(L.date), ssTz, today));
+    out.push({
+      category: cat.key, categoryLabel: cat.label, row: lastDataRow,
+      day: null, name: name, phone: phoneStr, keys: phoneKeys_(phoneRaw),
+      via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
+      enteredBy: clean_(g(L.enteredBy)), enteredAt: enteredAt,
+    });
+  }
+  resolveDays_(cands).forEach(function (d, i) { out[i].day = d; });
+  return { rows: out, lastDataRow: lastDataRow };
+}
+
+/** Reads every claim row of a category tab (used for full history / "All time" records). */
 function readClaims_(cat, today, ssTz) {
   const sh = categorySheet_(cat, false);
   if (!sh) return { rows: [], lastDataRow: 0, layout: null };
   const L = layout_(sh, false);
   const last = sh.getLastRow();
-  const out = [];
-  let lastDataRow = L.headerRow;
-  if (last > L.headerRow) {
-    const vals = sh.getRange(L.headerRow + 1, 1, last - L.headerRow, L.width).getValues();
-    const cands = [];
-    for (let i = 0; i < vals.length; i++) {
-      const r = vals[i];
-      const g = function (c) { return c ? r[c - 1] : ''; };
-      const name = clean_(g(L.name)), phoneRaw = g(L.phone);
-      const phoneStr = cellStr_(phoneRaw);
-      if (!name && !phoneStr) continue;
-      lastDataRow = L.headerRow + 1 + i;
-      const enteredAt = cellStr_(g(L.enteredAt));
-      const stamp = enteredAt ? cellDayCands_(enteredAt, ssTz, today) : [];   // set by this system: exact
-      cands.push(stamp.length ? stamp : cellDayCands_(g(L.date), ssTz, today));
-      out.push({
-        category: cat.key, categoryLabel: cat.label, row: lastDataRow,
-        day: null, name: name, phone: phoneStr, keys: phoneKeys_(phoneRaw),
-        via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
-        enteredBy: clean_(g(L.enteredBy)), enteredAt: enteredAt,
-      });
+  if (last <= L.headerRow) return { rows: [], lastDataRow: L.headerRow, layout: L };
+  const res = parseClaims_(cat, L, sh.getRange(L.headerRow + 1, 1, last - L.headerRow, L.width).getValues(), L.headerRow + 1, today, ssTz);
+  return { rows: res.rows, lastDataRow: res.lastDataRow || L.headerRow, layout: L };
+}
+
+/**
+ * Reads only the recent end of a tab: the sheets are in date order, so it reads blocks
+ * from the bottom up and stops once a block's top rows are clearly older than ~45 days.
+ */
+function readClaimsRecent_(cat, today, ssTz) {
+  const sh = categorySheet_(cat, false);
+  if (!sh) return [];
+  const L = layout_(sh, false);
+  const CHUNK = 1500, OLD = today - (CFG.LOCK_DAYS + 15);
+  let end = sh.getLastRow(), vals = [], first = end + 1;
+  while (end > L.headerRow) {
+    const start = Math.max(L.headerRow + 1, end - CHUNK + 1);
+    const chunk = sh.getRange(start, 1, end - start + 1, L.width).getValues();
+    vals = chunk.concat(vals); first = start; end = start - 1;
+    const clear = [];
+    for (let i = 0; i < chunk.length && clear.length < 40; i++) {      // clear (unambiguous) dates at the top of the block
+      const c = cellDayCands_(chunk[i][L.date - 1], ssTz, today);
+      if (c.length === 1) clear.push(c[0]);
     }
-    resolveDays_(cands).forEach(function (d, i) { out[i].day = d; });
+    if (clear.length >= 10) {
+      clear.sort(function (a, b) { return a - b; });
+      if (clear[Math.floor(clear.length / 2)] < OLD) break;
+    }
   }
-  return { rows: out, lastDataRow: lastDataRow, layout: L };
+  return parseClaims_(cat, L, vals, first, today, ssTz).rows;
 }
 
 function readAllClaims_() {
@@ -472,6 +531,78 @@ function readAllClaims_() {
   let rows = [];
   CATEGORIES.forEach(function (cat) { rows = rows.concat(readClaims_(cat, today, ssTz).rows); });
   return { rows: rows, today: today };
+}
+
+/* Recent claims (last 31 days) kept in the script cache so checks don't have to open the sheet.
+   Cleared when someone edits the sheet by hand (onEdit) and updated on every registration. */
+const IDX_TTL = 300;          // seconds
+const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy'];
+
+function recentClaims_() {
+  const today = todayDay_();
+  const cached = idxGet_(today);
+  if (cached) return { rows: cached, today: today };
+  const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  let rows = [];
+  CATEGORIES.forEach(function (cat) {
+    rows = rows.concat(readClaimsRecent_(cat, today, ssTz).filter(function (r) { return r.day !== null && today - r.day <= 31; }));
+  });
+  idxPut_(rows, today);
+  return { rows: rows, today: today };
+}
+
+function idxGet_(today) {
+  const c = CacheService.getScriptCache();
+  const meta = c.get('idx:meta');
+  if (!meta) return null;
+  const m = JSON.parse(meta);
+  if (m.today !== today) return null;
+  const keys = [];
+  for (let i = 0; i < m.n; i++) keys.push('idx:' + m.ver + ':' + i);
+  const parts = c.getAll(keys);
+  let str = '';
+  for (let i = 0; i < keys.length; i++) { if (parts[keys[i]] == null) return null; str += parts[keys[i]]; }
+  return JSON.parse(str).map(function (a) { const o = {}; IDX_FIELDS.forEach(function (f, i) { o[f] = a[i]; }); return o; });
+}
+
+function idxPut_(rows, today) {
+  const c = CacheService.getScriptCache();
+  const str = JSON.stringify(rows.map(function (r) { return IDX_FIELDS.map(function (f) { return r[f]; }); }));
+  const ver = Utilities.getUuid().slice(0, 8), obj = {}, SIZE = 25000;   // chars per piece (cache limit 100 KB per value)
+  let n = 0;
+  for (let i = 0; i < str.length; i += SIZE) obj['idx:' + ver + ':' + (n++)] = str.slice(i, i + SIZE);
+  if (n > 40) return;                                                     // unusually large: just don't cache
+  c.putAll(obj, IDX_TTL + 60);
+  c.put('idx:meta', JSON.stringify({ ver: ver, n: n, today: today }), IDX_TTL);
+}
+
+function clearCaches_() { CacheService.getScriptCache().removeAll(['idx:meta', 'users', 'agents']); }
+
+/** Simple trigger: someone edited the sheet by hand → drop cached data so the next check re-reads it. */
+function onEdit(e) {
+  try {
+    const n = e && e.range ? e.range.getSheet().getName() : '';
+    const c = CacheService.getScriptCache();
+    if (n === CFG.AGENTS_SHEET) c.remove('agents');
+    else if (n === CFG.USERS_SHEET) c.remove('users');
+    else c.remove('idx:meta');
+  } catch (x) { /* never block an edit */ }
+}
+
+/** Last row that has a customer name or phone (reads two columns from the bottom up). */
+function lastDataRow_(sh, L) {
+  let end = sh.getLastRow();
+  while (end > L.headerRow) {
+    const start = Math.max(L.headerRow + 1, end - 499);
+    const n = end - start + 1;
+    const names = L.name ? sh.getRange(start, L.name, n, 1).getValues() : [];
+    const phones = sh.getRange(start, L.phone, n, 1).getValues();
+    for (let i = n - 1; i >= 0; i--) {
+      if (String(phones[i][0]).trim() || (names[i] && String(names[i][0]).trim())) return start + i;
+    }
+    end = start - 1;
+  }
+  return L.headerRow;
 }
 
 /* ───────────────────────── Phone + date logic ───────────────────────── */
@@ -605,16 +736,20 @@ function claimView_(r, today) {
 
 /* ───────────────────────── Check + Register ───────────────────────── */
 
-function checkPhone(token, phone) {
+function checkPhone(token, phone, withHistory) {
   auth_(token);
   const p = parseNewPhone_(phone);
   if (!p.valid) return p;
-  const all = readAllClaims_();
-  const lockRow = findLock_(p.key, all.rows, all.today);
-  const history = all.rows.filter(function (r) { return r.keys.indexOf(p.key) >= 0; })
-    .sort(function (a, b) { return (b.day || 0) - (a.day || 0); })
-    .slice(0, 15).map(function (r) { return claimView_(r, all.today); });
-  return { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, all.today) : null, history: history };
+  const recent = recentClaims_();
+  const lockRow = findLock_(p.key, recent.rows, recent.today);
+  const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
+  if (withHistory) {
+    const all = readAllClaims_();
+    out.history = all.rows.filter(function (r) { return r.keys.indexOf(p.key) >= 0; })
+      .sort(function (a, b) { return (b.day || 0) - (a.day || 0); })
+      .slice(0, 15).map(function (r) { return claimView_(r, all.today); });
+  }
+  return out;
 }
 
 function register(token, data) {
@@ -636,19 +771,14 @@ function register(token, data) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const ssTz = ss.getSpreadsheetTimeZone();
-    const today = todayDay_();
-    let rows = [], target = null;
-    CATEGORIES.forEach(function (c) {
-      const res = readClaims_(c, today, ssTz);
-      rows = rows.concat(res.rows);
-      if (c.key === cat.key) target = res;
-    });
-    const hit = findLock_(p.key, rows, today);
+    const recent = recentClaims_();
+    const today = recent.today;
+    const hit = findLock_(p.key, recent.rows, today);
     if (hit) return { ok: false, lock: claimView_(hit, today) };
 
     const sh = categorySheet_(cat, true);
     const L = layout_(sh, true);
-    const r = Math.max(target && target.layout ? target.lastDataRow : L.headerRow, L.headerRow) + 1;
+    const r = lastDataRow_(sh, L) + 1;
     if (r > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 50);
     const range = sh.getRange(r, 1, 1, L.width);
     const vals = range.getValues()[0];
@@ -667,6 +797,9 @@ function register(token, data) {
     range.setValues([vals]);
     if (L.date) sh.getRange(r, L.date).setNumberFormat('dd/mm/yyyy');
     SpreadsheetApp.flush();
+    recent.rows.push({ day: today, keys: [p.key], category: cat.key, categoryLabel: cat.label, row: r, name: name, phone: p.formatted,
+      via: via, type: agent.type, supervisor: supervisor || '', enteredBy: u.name || u.username });
+    idxPut_(recent.rows, today);
     return {
       ok: true, category: cat.label, row: r, name: name, phone: p.formatted, agent: agent.name, agentType: agent.type,
       supervisor: supervisor || '', date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS),
@@ -681,9 +814,9 @@ function register(token, data) {
 function listRecords(token, f) {
   auth_(token, ['admin', 'viewer']);
   f = f || {};
-  const all = readAllClaims_();
-  const today = all.today;
   const days = Number(f.days || 0);
+  const all = days > 0 && days <= 31 ? recentClaims_() : readAllClaims_();   // recent periods: fast path
+  const today = all.today;
   const q = String(f.q || '').trim().toLowerCase();
   const qDigits = q.replace(/\D/g, '');
   const qKey = qDigits.length >= 4 ? (normDigits_(qDigits) || qDigits) : '';
