@@ -435,7 +435,9 @@ function combo(rootId, getItems, onPick, onAdd) {
 
 /* ---------- register ---------- */
 $('regCat').querySelectorAll('button').forEach((b) => (b.onclick = () => {
+  const changed = S.cat !== b.dataset.v;
   S.cat = b.dataset.v; $('regCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+  if (changed) recheckPhones('#tRegister');
 }));
 $('regType').onchange = () => {
   const t = $('regType').value;
@@ -499,7 +501,7 @@ function lockHtml(l, title) {
 }
 
 /* Live "is this number free?" check for any phone input. skip = record being edited (not counted as a conflict). */
-function bindPhone(input, el, skip, getWho) {
+function bindPhone(input, el, skip, getWho, getCtx) {
   let t, seq = 0;
   input.addEventListener('input', () => {
     clearTimeout(t); input.dataset.state = '';
@@ -523,43 +525,48 @@ function bindPhone(input, el, skip, getWho) {
             : r.lock.match === 'name' ? '<div class="why">Same first 8 digits and a similar name (<b>' + esc(r.lock.name) + '</b>), so it is treated as the same customer.</div>' : '';
           msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
         } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
-        showHistory(el, input.value, skip, () => my === seq, r.lock);
+        showHistory(el, input.value, skip, () => my === seq, getCtx);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
     }, 450);
   });
 }
-/* Earlier (expired) claims shown under the phone check. */
-async function showHistory(el, phone, skip, stillCurrent, lock) {
+/* Previous registrations in the SAME category (Office Visit / Site Visit), shown under the phone check.
+   getCtx() → { category, customerName }. Not shown for Expecting. */
+async function showHistory(el, phone, skip, stillCurrent, getCtx) {
+  const ctx = getCtx ? getCtx() : {};
+  if (!ctx.category || ctx.category === 'expecting') return;
+  const label = CATS[ctx.category];
   const box = document.createElement('div');
-  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up earlier claims…';
+  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up previous ' + esc(label) + 's…';
   el.appendChild(box);
   try {
-    const h = await call('phoneHistory', S.token, phone, skip || null);
+    const h = await call('phoneHistory', S.token, phone, skip || null, ctx);
     if (!stillCurrent()) return;
-    const past = h.filter((x) => !x.active);
-    if (!past.length) { box.innerHTML = lock ? '' : 'No earlier claims for this number.'; if (!box.innerHTML) box.remove(); return; }
-    box.innerHTML = '<b>Previously claimed:</b><ul>' + past.slice(0, 3).map((x) =>
-      '<li>by <b>' + esc(x.via || '—') + '</b> in ' + esc(x.category) + ' on ' + esc(x.date) + ' <span class="muted">(was locked until ' + esc(x.endsOn) + ')</span></li>').join('') + '</ul>';
+    if (!h.length) { box.innerHTML = 'No previous ' + esc(label) + ' for this customer.'; return; }
+    box.innerHTML = '<b>Previous ' + esc(label) + 's:</b><ul>' + h.slice(0, 3).map((x) =>
+      '<li>' + esc(x.date) + ' by <b>' + esc(x.via || '—') + '</b>' + (x.name ? ' <span class="muted">(' + esc(x.name) + ')</span>' : '') +
+      (x.active ? ' <span class="tag lock">still claimed until ' + esc(x.endsOn) + '</span>' : ' <span class="muted">· was locked until ' + esc(x.endsOn) + '</span>') + '</li>').join('') + '</ul>';
   } catch (e) { if (stillCurrent()) box.remove(); }
 }
 
 /* Adds an extra phone input (with remove button) to a container. */
-function addPhoneRow(container, value, skip, onChange, getWho) {
+function addPhoneRow(container, value, skip, onChange, getWho, getCtx) {
   const wrap = document.createElement('div');
   wrap.innerHTML = '<div class="phone-row"><input type="tel" class="reg-phone" inputmode="tel" placeholder="Another number"><button type="button" class="xbtn" title="Remove">×</button></div><div class="pstat"></div>';
   container.appendChild(wrap);
   const inp = wrap.querySelector('input');
   inp.value = value || '';
-  bindPhone(inp, wrap.querySelector('.pstat'), skip, getWho);
+  bindPhone(inp, wrap.querySelector('.pstat'), skip, getWho, getCtx);
   wrap.querySelector('.xbtn').onclick = () => { wrap.remove(); if (onChange) onChange(); };
   if (onChange) onChange();
   return inp;
 }
 const MAX_PHONES = 3;
 const regWho = () => ({ agentId: S.agent ? S.agent.id : '', customerName: $('regName').value.trim() });
-bindPhone($('regPhone'), $('regPhoneStatus'), null, regWho);
+const regCtx = () => ({ category: S.cat, customerName: $('regName').value.trim() });
+bindPhone($('regPhone'), $('regPhoneStatus'), null, regWho, regCtx);
 function syncRegAdd() { $('regAddPhone').disabled = document.querySelectorAll('#tRegister .reg-phone').length >= MAX_PHONES; }
-$('regAddPhone').onclick = () => { addPhoneRow($('regExtraPhones'), '', null, syncRegAdd, regWho).focus(); };
+$('regAddPhone').onclick = () => { addPhoneRow($('regExtraPhones'), '', null, syncRegAdd, regWho, regCtx).focus(); };
 let regNameT;
 $('regName').addEventListener('input', () => { clearTimeout(regNameT); regNameT = setTimeout(() => recheckPhones('#tRegister'), 700); });
 function recheckPhones(scope) { document.querySelectorAll(scope + ' .reg-phone').forEach((i) => { if (i.value.replace(/\D/g, '').length >= 8) i.dispatchEvent(new Event('input')); }); }
@@ -625,13 +632,14 @@ function openEdit(rec) {
   $('modalBox').classList.add('wide');
   $('eName').value = rec.name;
   let eNameT; $('eName').addEventListener('input', () => { clearTimeout(eNameT); eNameT = setTimeout(() => recheckPhones('#ePhones'), 700); });
-  $('eCat').querySelectorAll('button').forEach((b) => (b.onclick = () => { cat = b.dataset.v; $('eCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); }));
+  $('eCat').querySelectorAll('button').forEach((b) => (b.onclick = () => { const ch = cat !== b.dataset.v; cat = b.dataset.v; $('eCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); if (ch) recheckPhones('#ePhones'); }));
   const phones = String(rec.phone || '').split(' / ').filter(Boolean);
   const box = $('ePhones');
   const syncAdd = () => { $('eAddPhone').disabled = box.querySelectorAll('.reg-phone').length >= MAX_PHONES; const xs = box.querySelectorAll('.xbtn'); xs.forEach((x) => (x.style.visibility = xs.length > 1 ? 'visible' : 'hidden')); };
   const eWho = () => Object.assign(agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() }, { customerName: ($('eName') ? $('eName').value.trim() : rec.name) });
-  (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd, eWho));
-  $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd, eWho).focus();
+  const eCtx = () => ({ category: cat, customerName: $('eName') ? $('eName').value.trim() : rec.name });
+  (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd, eWho, eCtx));
+  $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd, eWho, eCtx).focus();
   $('eChangeAgent').onclick = () => { $('eAgentPick').classList.remove('hidden'); $('eAgentNow').classList.add('hidden'); if (rec.type && S.types.indexOf(rec.type) >= 0) { $('eType').value = rec.type; $('eType').onchange(); } };
   $('eType').onchange = () => { const t = $('eType').value; $('eAgent').disabled = !t; $('eAgent').value = ''; agent = null; $('eSup').innerHTML = ''; $('eAgent').placeholder = t ? 'Type to search ' + t + ' names' : 'Choose type first'; };
   combo('eCombo', () => S.agents.filter((a) => a.active && a.type === $('eType').value), (a) => {

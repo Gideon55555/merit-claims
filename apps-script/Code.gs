@@ -608,46 +608,54 @@ function historyIndex_() {
     if (ok) return JSON.parse(str);
   }
   const all = readAllClaims_(), idx = {};
+  const catKeys = CATEGORIES.map(function (x) { return x.key; });
   all.rows.forEach(function (r) {
     if (r.day === null) return;
-    const e = [r.day, CATEGORIES.map(function (x) { return x.key; }).indexOf(r.category), r.via, r.row];
+    const e = [r.day, catKeys.indexOf(r.category), r.via, r.row, r.name, r.phone];
     r.keys.forEach(function (k) { (idx[k] = idx[k] || []).push(e); });
   });
   Object.keys(idx).forEach(function (k) { idx[k] = idx[k].sort(function (a, b) { return b[0] - a[0]; }).slice(0, HIST_KEEP); });
   const str = JSON.stringify(idx), ver = Utilities.getUuid().slice(0, 8), obj = {}, SIZE = 25000;
   let n = 0;
   for (let i = 0; i < str.length; i += SIZE) obj['hist:' + ver + ':' + (n++)] = str.slice(i, i + SIZE);
-  if (n <= 200) { c.putAll(obj, HIST_TTL); c.put('hist:meta', JSON.stringify({ ver: ver, n: n }), HIST_TTL); }
+  if (n <= 300) { c.putAll(obj, HIST_TTL); c.put('hist:meta', JSON.stringify({ ver: ver, n: n }), HIST_TTL); }
   return idx;
 }
 
-/** Earlier claims of a number (newest first), for the line under the phone check. */
-function phoneHistory(token, phone, skip) {
+/**
+ * Earlier registrations of a number (newest first), for the line under the phone check.
+ * opts.category: only that category (e.g. previous Office Visits). opts.customerName: when digits are hidden,
+ * only people whose name matches (same rule as the 30-day check).
+ */
+function phoneHistory(token, phone, skip, opts) {
   auth_(token);
+  opts = opts || {};
   const p = parseNewPhone_(phone);
   if (!p.valid) return [];
+  const item = { key: p.key, digits: p.digits, intl: p.intl };
+  const custName = opts.customerName ? String(opts.customerName) : null;
   const idx = historyIndex_(), recent = recentClaims_(), today = recent.today;
-  const found = {}, add = function (day, catKey, via, row) {
-    const id = catKey + ':' + row;
+  const found = {}, add = function (day, catKey, via, row, name, ph) {
+    if (opts.category && catKey !== opts.category) return;
     if (skip && skip.catKey === catKey && Number(skip.row) === row) return;
-    if (!found[id]) found[id] = { day: day, catKey: catKey, via: via, row: row };
+    if (matchReason_({ keys: rowNumbers_(ph).map(function (n) { return n.key; }), phone: ph, name: name }, item, custName) === null) return;
+    const id = catKey + ':' + row;
+    if (!found[id]) found[id] = { day: day, catKey: catKey, via: via, row: row, name: name };
   };
-  recent.rows.forEach(function (r) { if (r.day !== null && hasKey_(r.keys, p.key)) add(r.day, r.category, r.via, r.row); });
-  const recentIds = {};
-  recent.rows.forEach(function (r) { recentIds[r.category + ':' + r.row] = true; });
+  recent.rows.forEach(function (r) { if (r.day !== null && hasKey_(r.keys, p.key)) add(r.day, r.category, r.via, r.row, r.name, r.phone); });
   Object.keys(idx).forEach(function (k) {
     if (!keyMatch_(k, p.key)) return;
     idx[k].forEach(function (e) {
       const cat = CATEGORIES[e[1]];
       if (!cat || today - e[0] <= 31) return;              // last 31 days come from recent (fresh) data
-      add(e[0], cat.key, e[2], e[3]);
+      add(e[0], cat.key, e[2], e[3], e[4], e[5]);
     });
   });
   return Object.keys(found).map(function (id) { return found[id]; })
     .sort(function (a, b) { return b.day - a.day; }).slice(0, 5)
     .map(function (h) {
       const cat = CATEGORIES.filter(function (c) { return c.key === h.catKey; })[0];
-      return { via: h.via, category: cat ? cat.label : '', date: dayStr_(h.day), endsOn: dayStr_(h.day + CFG.LOCK_DAYS),
+      return { via: h.via, name: h.name, category: cat ? cat.label : '', date: dayStr_(h.day), endsOn: dayStr_(h.day + CFG.LOCK_DAYS),
         active: today - h.day <= CFG.LOCK_DAYS };
     });
 }
