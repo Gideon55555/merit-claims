@@ -82,8 +82,8 @@ function publicCheck(phone) {
   if (n > PUBLIC_CHECK.maxPerMinute) throw new Error('Too many checks right now. Wait a minute and try again.');
   const p = parseNewPhone_(phone);
   if (!p.valid) return { valid: false, error: p.error };
-  const all = readAllClaims_();
-  const hit = findLock_(p.key, all.rows, all.today);
+  const all = recentClaims_();
+  const hit = findLock_({ key: p.key, digits: p.digits, intl: p.intl }, all.rows, all.today);
   if (!hit) return { valid: true, formatted: p.formatted, claimed: false };
   return {
     valid: true, formatted: p.formatted, claimed: true, category: hit.categoryLabel,
@@ -811,15 +811,114 @@ function dayStr_(day) {
 }
 
 /** Latest registration of this key that is still inside the lock window, or null. */
-function findLock_(key, rows, today, skip) {
+/**
+ * Latest claim (within 30 days) for a number. `item` is a match key string, or a parsed number
+ * { key, digits, intl } — then hidden-digit matches are decided by the customer's name (custName).
+ */
+function findLock_(item, rows, today, skip, custName) {
+  const key = typeof item === 'string' ? item : item.key;
   let best = null;
   rows.forEach(function (r) {
     if (r.day === null || !hasKey_(r.keys, key)) return;
+    if (typeof item !== 'string' && !claimMatches_(r, item, custName)) return;
     if (skip && r.category === skip.category && r.row === skip.row) return;   // the record being edited
     if (today - r.day > CFG.LOCK_DAYS) return;
     if (!best || r.day > best.day || (r.day === best.day && stampMs_(r.enteredAt) >= stampMs_(best.enteredAt))) best = r;   // same day: newest entry wins
   });
   return best;
+}
+
+/** The numbers in a phone cell, parsed: [{ key, digits, intl }]. */
+function rowNumbers_(phone) {
+  const out = [];
+  String(phone == null ? '' : phone).split(/[\/,;\n()&]|\bor\b/i).forEach(function (part) {
+    const n = normPhone_(part);
+    if (!n) return;
+    const key = n.intl ? '+' + n.digits : (n.digits.length >= CFG.KEY_DIGITS ? n.digits.slice(0, CFG.KEY_DIGITS) : null);
+    if (key) out.push({ key: key, digits: n.digits, intl: n.intl });
+  });
+  return out;
+}
+
+/** 'same' | 'different' | 'unknown' (some digits are hidden, can't tell from the number alone). */
+function compareNumbers_(a, b) {
+  if (a.digits === b.digits) return a.intl || a.digits.length >= 10 ? 'same' : 'unknown';   // both hidden: can't tell
+  if (a.intl !== b.intl) return 'different';
+  if (a.intl) return a.digits.length === b.digits.length ? 'different' : 'unknown';
+  return a.digits.length >= 10 && b.digits.length >= 10 ? 'different' : 'unknown';
+}
+
+/**
+ * Is this claim row the same customer as the new number?
+ *  - full numbers on both sides → compare all digits
+ *  - hidden digits on either side → compare the customer's first name (no name given → assume same, to be safe)
+ */
+function claimMatches_(row, item, custName) {
+  return matchReason_(row, item, custName) !== null;
+}
+
+function matchReason_(row, item, custName) {
+  if (!hasKey_(row.keys, item.key)) return null;
+  if (!item.digits) return 'number';
+  const nums = rowNumbers_(row.phone).filter(function (n) { return keyMatch_(n.key, item.key); });
+  if (!nums.length) return 'number';
+  let unknown = false;
+  for (let i = 0; i < nums.length; i++) {
+    const c = compareNumbers_(nums[i], item);
+    if (c === 'same') return 'number';
+    if (c === 'unknown') unknown = true;
+  }
+  if (!unknown) return null;                                 // full numbers that differ in the last digits
+  if (custName === null || custName === undefined || !String(custName).trim()) return 'assumed';
+  return sameCustomerName_(row.name, custName) ? 'name' : null;
+}
+
+/**
+ * Names to compare: the first name, plus any name written in brackets ("jemal(kader)" → jemal, kader).
+ * Titles (Ato, W/ro…) and placeholders ("unknown") are ignored.
+ */
+function nameTokens_(s) {
+  const low = String(s || '').toLowerCase();
+  const parts = [low.replace(/\(.*?\)/g, ' ')].concat((low.match(/\(([^)]*)\)/g) || []).map(function (x) { return x.slice(1, -1); }));
+  const out = [];
+  parts.forEach(function (p) {
+    const w = p.trim().replace(/^(ato|w\/ro|w\/rt|wro|weyzero|mr|mrs|ms|dr)\.?\s+/, '').split(/\s+/)[0] || '';
+    const t = w.replace(/[^a-z\u1200-\u137f]/g, '');
+    if (t && !/^(unknown|unkown|unknow|unk|customer|client|noname|none|na|x+)$/.test(t)) out.push(t);
+  });
+  return out;
+}
+
+/** First-letter group: vowels count as one group (a/e/i/o/u, አ/ዐ); Ethiopic letters by consonant family (ሀ ሁ ሂ ሃ … are one). */
+function initialGroup_(t) {
+  const ch = t.charAt(0), cp = ch.charCodeAt(0);
+  if ('aeiou'.indexOf(ch) >= 0) return 'V';
+  if (cp >= 0x1200 && cp <= 0x137f) {
+    const fam = Math.floor((cp - 0x1200) / 8);
+    return fam === (0x12a0 - 0x1200) / 8 || fam === (0x12d0 - 0x1200) / 8 ? 'V' : 'E' + fam;
+  }
+  return ch;
+}
+
+/**
+ * Same customer? Decided by the first letter of the first name (spelling of the rest varies too much):
+ * same first letter → same customer. A missing name counts as the same, to be safe.
+ */
+function sameCustomerName_(a, b) {
+  const x = nameTokens_(a), y = nameTokens_(b);
+  if (!x.length || !y.length) return true;
+  return x.some(function (p) { return y.some(function (q) { return initialGroup_(p) === initialGroup_(q); }); });
+}
+
+/** Kept for reference: simple spelling distance. */
+function editDistance_(a, b) {
+  const m = a.length, n = b.length, d = [];
+  for (let i = 0; i <= m; i++) { d[i] = [i]; }
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[m][n];
 }
 
 function claimView_(r, today) {
@@ -845,10 +944,14 @@ function checkPhone(token, phone, withHistory, skip, who) {
   const p = parseNewPhone_(phone);
   if (!p.valid) return p;
   const recent = recentClaims_();
-  const lockRow = findLock_(p.key, recent.rows, recent.today, skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null);
+  const custName = who && who.customerName ? String(who.customerName) : null;
+  const item = { key: p.key, digits: p.digits, intl: p.intl };
+  const lockRow = findLock_(item, recent.rows, recent.today, skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null, custName);
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
+  if (lockRow) out.lock.match = matchReason_(lockRow, item, custName);   // 'number' | 'name' | 'assumed'
   if (lockRow && who) {
     const name = who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '');
+    if (!name) { /* no agent chosen yet */ }
     out.lock.sameAgent = !!name && sameAgent_(lockRow, name);
   }
   if (withHistory) {
@@ -865,14 +968,14 @@ function parsePhones_(list) {
   list = (Array.isArray(list) ? list : [list]).map(function (x) { return String(x || '').trim(); }).filter(String);
   if (!list.length) throw new Error('Enter the customer phone number.');
   if (list.length > CFG.MAX_PHONES) throw new Error('Up to ' + CFG.MAX_PHONES + ' phone numbers per customer.');
-  const keys = [], shown = [];
+  const keys = [], shown = [], items = [];
   list.forEach(function (x) {
     const p = parseNewPhone_(x);
     if (!p.valid) throw new Error(x + ': ' + p.error);
-    if (hasKey_(keys, p.key)) return;                       // same number twice
-    keys.push(p.key); shown.push(p.formatted);
+    if (items.some(function (it) { return it.digits === p.digits; })) return;   // same number twice
+    keys.push(p.key); shown.push(p.formatted); items.push({ key: p.key, digits: p.digits, intl: p.intl });
   });
-  return { keys: keys, formatted: shown.join(' / ') };
+  return { keys: keys, items: items, formatted: shown.join(' / ') };
 }
 
 function agentFields_(agentId) {
@@ -886,9 +989,9 @@ function agentFields_(agentId) {
  * First claim that blocks these numbers. A claim by the SAME agent does not block:
  * the agent who owns the customer may register them again (e.g. Expecting → Office Visit → Site Visit).
  */
-function firstLock_(keys, rows, today, skip, agentName) {
-  for (let i = 0; i < keys.length; i++) {
-    const h = findLock_(keys[i], rows, today, skip);
+function firstLock_(items, rows, today, skip, agentName, custName) {
+  for (let i = 0; i < items.length; i++) {
+    const h = findLock_(items[i], rows, today, skip, custName);
     if (h && !sameAgent_(h, agentName)) return h;
   }
   return null;
@@ -932,7 +1035,7 @@ function register(token, data) {
     const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     const recent = recentClaims_();
     const today = recent.today;
-    const hit = firstLock_(ph.keys, recent.rows, today, null, a.agent.name);
+    const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name);
     if (hit) return { ok: false, lock: claimView_(hit, today) };
 
     const sh = categorySheet_(cat, true);
@@ -1027,16 +1130,16 @@ function editRecord(token, data) {
     // phones: re-validate only if they were changed
     const phonesIn = (Array.isArray(data.phones) ? data.phones : [data.phones]).map(function (x) { return String(x || '').trim(); }).filter(String);
     const unchanged = phonesIn.join(' / ') === rec.phone || (phonesIn.length === 1 && phonesIn[0] === rec.phone);
-    let phone = rec.phone, keys = phoneKeys_(rec.phone);
-    if (!unchanged) { const ph = parsePhones_(phonesIn); phone = ph.formatted; keys = ph.keys; }
+    let phone = rec.phone, items = rowNumbers_(rec.phone);
+    if (!unchanged) { const ph = parsePhones_(phonesIn); phone = ph.formatted; items = ph.items; }
 
     let via = rec.via, type = rec.type, supervisor = rec.supervisor;
     if (data.agentId) { const a = agentFields_(data.agentId); via = a.via; type = a.agent.type; supervisor = a.supervisor; }
 
     const recent = recentClaims_();
     const today = recent.today;
-    if (!unchanged || data.agentId) {
-      const hit = firstLock_(keys, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim());
+    if (!unchanged || data.agentId || name !== rec.name) {
+      const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name);
       if (hit) return { ok: false, lock: claimView_(hit, today) };
     }
     const edited = (u.name || u.username) + ', ' + nowStr_();

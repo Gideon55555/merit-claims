@@ -147,6 +147,7 @@
   #toast.err { background: var(--bad); }
   .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
   @keyframes sp { to { transform: rotate(360deg); } }
+  .why { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #f0b8b2; font-size: 13px; color: #7a2a22; }
   .hist { margin: 6px 0 4px; padding: 9px 12px; background: #f6f8f9; border: 1px solid var(--line); border-radius: 8px; font-size: 13.5px; color: #44525e; }
   .hist ul { margin: 4px 0 0; padding-left: 18px; }
   .hist li { margin: 2px 0; }
@@ -543,7 +544,11 @@ function bindPhone(input, el, skip, getWho) {
           msgBox(el, 'ok', '<b>Same agent ✓</b> ' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) + '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + '. They can register this customer again.');
         } else if (r.lock) {
           input.dataset.state = 'locked';
-          msgBox(el, 'bad', lockHtml(r.lock) + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (who ? '' : ' If it is them, choose them as the agent below.') + '</div>');
+          const hasAgent = who && (who.agentId || who.agentName);
+          const why = r.lock.match === 'assumed'
+            ? '<div class="why">Only the first 8 digits are known, so it could be another person. <b>Type the customer\'s name</b>. If the first name is different, it will be allowed.</div>'
+            : r.lock.match === 'name' ? '<div class="why">Same first 8 digits and a similar name (<b>' + esc(r.lock.name) + '</b>), so it is treated as the same customer.</div>' : '';
+          msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
         } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
         showHistory(el, input.value, skip, () => my === seq, r.lock);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
@@ -578,10 +583,12 @@ function addPhoneRow(container, value, skip, onChange, getWho) {
   return inp;
 }
 const MAX_PHONES = 3;
-const regWho = () => (S.agent ? { agentId: S.agent.id } : null);
+const regWho = () => ({ agentId: S.agent ? S.agent.id : '', customerName: $('regName').value.trim() });
 bindPhone($('regPhone'), $('regPhoneStatus'), null, regWho);
 function syncRegAdd() { $('regAddPhone').disabled = document.querySelectorAll('#tRegister .reg-phone').length >= MAX_PHONES; }
 $('regAddPhone').onclick = () => { addPhoneRow($('regExtraPhones'), '', null, syncRegAdd, regWho).focus(); };
+let regNameT;
+$('regName').addEventListener('input', () => { clearTimeout(regNameT); regNameT = setTimeout(() => recheckPhones('#tRegister'), 700); });
 function recheckPhones(scope) { document.querySelectorAll(scope + ' .reg-phone').forEach((i) => { if (i.value.replace(/\D/g, '').length >= 8) i.dispatchEvent(new Event('input')); }); }
 function regPhones() { return Array.from(document.querySelectorAll('#tRegister .reg-phone')).map((i) => i.value.trim()).filter(Boolean); }
 function anyLocked(scope) { return Array.from(document.querySelectorAll(scope + ' .reg-phone')).some((i) => i.dataset.state === 'locked'); }
@@ -644,11 +651,12 @@ function openEdit(rec) {
     '<div id="eMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="eSave" type="button">Save changes</button></div>');
   $('modalBox').classList.add('wide');
   $('eName').value = rec.name;
+  let eNameT; $('eName').addEventListener('input', () => { clearTimeout(eNameT); eNameT = setTimeout(() => recheckPhones('#ePhones'), 700); });
   $('eCat').querySelectorAll('button').forEach((b) => (b.onclick = () => { cat = b.dataset.v; $('eCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); }));
   const phones = String(rec.phone || '').split(' / ').filter(Boolean);
   const box = $('ePhones');
   const syncAdd = () => { $('eAddPhone').disabled = box.querySelectorAll('.reg-phone').length >= MAX_PHONES; const xs = box.querySelectorAll('.xbtn'); xs.forEach((x) => (x.style.visibility = xs.length > 1 ? 'visible' : 'hidden')); };
-  const eWho = () => (agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() });
+  const eWho = () => Object.assign(agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() }, { customerName: ($('eName') ? $('eName').value.trim() : rec.name) });
   (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd, eWho));
   $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd, eWho).focus();
   $('eChangeAgent').onclick = () => { $('eAgentPick').classList.remove('hidden'); $('eAgentNow').classList.add('hidden'); if (rec.type && S.types.indexOf(rec.type) >= 0) { $('eType').value = rec.type; $('eType').onchange(); } };
