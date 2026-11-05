@@ -147,6 +147,9 @@
   #toast.err { background: var(--bad); }
   .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
   @keyframes sp { to { transform: rotate(360deg); } }
+  .hist { margin: 6px 0 4px; padding: 9px 12px; background: #f6f8f9; border: 1px solid var(--line); border-radius: 8px; font-size: 13.5px; color: #44525e; }
+  .hist ul { margin: 4px 0 0; padding-left: 18px; }
+  .hist li { margin: 2px 0; }
   .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--brand); font-weight: 600; cursor: pointer; font-size: 14px; }
   .linkbtn:disabled { color: #9aa5ae; cursor: default; }
   .phone-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
@@ -541,12 +544,27 @@ function bindPhone(input, el, skip, getWho) {
         } else if (r.lock) {
           input.dataset.state = 'locked';
           msgBox(el, 'bad', lockHtml(r.lock) + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (who ? '' : ' If it is them, choose them as the agent below.') + '</div>');
-        }
-        else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
+        } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
+        showHistory(el, input.value, skip, () => my === seq, r.lock);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
     }, 450);
   });
 }
+/* Earlier (expired) claims shown under the phone check. */
+async function showHistory(el, phone, skip, stillCurrent, lock) {
+  const box = document.createElement('div');
+  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up earlier claims…';
+  el.appendChild(box);
+  try {
+    const h = await call('phoneHistory', S.token, phone, skip || null);
+    if (!stillCurrent()) return;
+    const past = h.filter((x) => !x.active);
+    if (!past.length) { box.innerHTML = lock ? '' : 'No earlier claims for this number.'; if (!box.innerHTML) box.remove(); return; }
+    box.innerHTML = '<b>Previously claimed:</b><ul>' + past.slice(0, 3).map((x) =>
+      '<li>by <b>' + esc(x.via || '—') + '</b> in ' + esc(x.category) + ' on ' + esc(x.date) + ' <span class="muted">(was locked until ' + esc(x.endsOn) + ')</span></li>').join('') + '</ul>';
+  } catch (e) { if (stillCurrent()) box.remove(); }
+}
+
 /* Adds an extra phone input (with remove button) to a container. */
 function addPhoneRow(container, value, skip, onChange, getWho) {
   const wrap = document.createElement('div');

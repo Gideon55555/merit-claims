@@ -58,7 +58,7 @@ function doPost(e) {
     login: login, logout: logout, whoAmI: whoAmI, changePassword: changePassword,
     getAgents: getAgents, checkPhone: checkPhone, register: register, listRecords: listRecords,
     listUsers: listUsers, saveUser: saveUser, resetUserPassword: resetUserPassword, saveAgent: saveAgent, addAgentQuick: addAgentQuick,
-    publicCheck: publicCheck, editRecord: editRecord, listMyEntries: listMyEntries,
+    publicCheck: publicCheck, editRecord: editRecord, listMyEntries: listMyEntries, phoneHistory: phoneHistory,
   };
   let out;
   try {
@@ -578,7 +578,7 @@ function idxPut_(rows, today) {
   c.put('idx:meta', JSON.stringify({ ver: ver, n: n, today: today }), IDX_TTL);
 }
 
-function clearCaches_() { CacheService.getScriptCache().removeAll(['idx:meta', 'users', 'agents']); }
+function clearCaches_() { CacheService.getScriptCache().removeAll(['idx:meta', 'hist:meta', 'users', 'agents']); }
 
 /** Simple trigger: someone edited the sheet by hand → drop cached data so the next check re-reads it. */
 function onEdit(e) {
@@ -589,6 +589,67 @@ function onEdit(e) {
     else if (n === CFG.USERS_SHEET) c.remove('users');
     else c.remove('idx:meta');
   } catch (x) { /* never block an edit */ }
+}
+
+/* All-time history per phone number (last few claims each), kept in cache for 6 hours.
+   Recent claims always come from recentClaims_(), so new registrations show up immediately. */
+const HIST_TTL = 21600;
+const HIST_KEEP = 4;
+
+function historyIndex_() {
+  const c = CacheService.getScriptCache();
+  const meta = c.get('hist:meta');
+  if (meta) {
+    const m = JSON.parse(meta), keys = [];
+    for (let i = 0; i < m.n; i++) keys.push('hist:' + m.ver + ':' + i);
+    const parts = c.getAll(keys);
+    let str = '', ok = true;
+    for (let i = 0; i < keys.length; i++) { if (parts[keys[i]] == null) { ok = false; break; } str += parts[keys[i]]; }
+    if (ok) return JSON.parse(str);
+  }
+  const all = readAllClaims_(), idx = {};
+  all.rows.forEach(function (r) {
+    if (r.day === null) return;
+    const e = [r.day, CATEGORIES.map(function (x) { return x.key; }).indexOf(r.category), r.via, r.row];
+    r.keys.forEach(function (k) { (idx[k] = idx[k] || []).push(e); });
+  });
+  Object.keys(idx).forEach(function (k) { idx[k] = idx[k].sort(function (a, b) { return b[0] - a[0]; }).slice(0, HIST_KEEP); });
+  const str = JSON.stringify(idx), ver = Utilities.getUuid().slice(0, 8), obj = {}, SIZE = 25000;
+  let n = 0;
+  for (let i = 0; i < str.length; i += SIZE) obj['hist:' + ver + ':' + (n++)] = str.slice(i, i + SIZE);
+  if (n <= 200) { c.putAll(obj, HIST_TTL); c.put('hist:meta', JSON.stringify({ ver: ver, n: n }), HIST_TTL); }
+  return idx;
+}
+
+/** Earlier claims of a number (newest first), for the line under the phone check. */
+function phoneHistory(token, phone, skip) {
+  auth_(token);
+  const p = parseNewPhone_(phone);
+  if (!p.valid) return [];
+  const idx = historyIndex_(), recent = recentClaims_(), today = recent.today;
+  const found = {}, add = function (day, catKey, via, row) {
+    const id = catKey + ':' + row;
+    if (skip && skip.catKey === catKey && Number(skip.row) === row) return;
+    if (!found[id]) found[id] = { day: day, catKey: catKey, via: via, row: row };
+  };
+  recent.rows.forEach(function (r) { if (r.day !== null && hasKey_(r.keys, p.key)) add(r.day, r.category, r.via, r.row); });
+  const recentIds = {};
+  recent.rows.forEach(function (r) { recentIds[r.category + ':' + r.row] = true; });
+  Object.keys(idx).forEach(function (k) {
+    if (!keyMatch_(k, p.key)) return;
+    idx[k].forEach(function (e) {
+      const cat = CATEGORIES[e[1]];
+      if (!cat || today - e[0] <= 31) return;              // last 31 days come from recent (fresh) data
+      add(e[0], cat.key, e[2], e[3]);
+    });
+  });
+  return Object.keys(found).map(function (id) { return found[id]; })
+    .sort(function (a, b) { return b.day - a.day; }).slice(0, 5)
+    .map(function (h) {
+      const cat = CATEGORIES.filter(function (c) { return c.key === h.catKey; })[0];
+      return { via: h.via, category: cat ? cat.label : '', date: dayStr_(h.day), endsOn: dayStr_(h.day + CFG.LOCK_DAYS),
+        active: today - h.day <= CFG.LOCK_DAYS };
+    });
 }
 
 /** Last row that has a customer name or phone (reads two columns from the bottom up). */
@@ -992,7 +1053,7 @@ function editRecord(token, data) {
       [L.date, L.name, L.phone, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited].forEach(function (c) { if (c) sh.getRange(row, c).clearContent(); });
       outCat = toCat; outRow = r2;
     }
-    CacheService.getScriptCache().remove('idx:meta');
+    CacheService.getScriptCache().removeAll(['idx:meta', 'hist:meta']);
     const fresh = recentClaims_();
     const updated = fresh.rows.filter(function (r) { return r.category === outCat.key && r.row === outRow; })[0];
     return { ok: true, record: updated ? claimView_(updated, fresh.today) : null };
