@@ -19,6 +19,8 @@ const CFG = {
   AGENTS_SHEET: 'Agents',
   USERS_SHEET: 'Users',
   MAX_RECORDS: 500,
+  EDIT_HOURS: 24,             // data entry can edit their own entries for this long (admins: any time)
+  MAX_PHONES: 3,              // phone numbers per customer
 };
 
 const CATEGORIES = [
@@ -29,7 +31,7 @@ const CATEGORIES = [
 
 const AGENT_TYPES = ['Sales', 'Elite Sales', 'Supervisor', 'Freelancer', 'Agent'];
 const ROLES = ['admin', 'entry', 'viewer'];
-const EXTRA_HEADERS = ['Agent Type', 'Supervisor', 'Entered By', 'Entered At'];
+const EXTRA_HEADERS = ['Agent Type', 'Supervisor', 'Entered By', 'Entered At', 'Edited'];
 const AGENT_HEADERS = ['ID', 'Type', 'Name', 'Supervisor', 'Phone', 'Active'];
 const USER_HEADERS = ['Username', 'Full Name', 'Role', 'Active', 'Salt', 'Hash', 'Must Change Password', 'Created', 'Last Login'];
 
@@ -56,7 +58,7 @@ function doPost(e) {
     login: login, logout: logout, whoAmI: whoAmI, changePassword: changePassword,
     getAgents: getAgents, checkPhone: checkPhone, register: register, listRecords: listRecords,
     listUsers: listUsers, saveUser: saveUser, resetUserPassword: resetUserPassword, saveAgent: saveAgent, addAgentQuick: addAgentQuick,
-    publicCheck: publicCheck,
+    publicCheck: publicCheck, editRecord: editRecord, listMyEntries: listMyEntries,
   };
   let out;
   try {
@@ -443,7 +445,7 @@ function layout_(sh, addExtras) {
   L.sn = find(function (s) { return /^(s\s*\/?\s*n|sr\.?\s*no|no\.?)$/i.test(s); });
   L.via = find(function (s) { return /via|sales|agent/i.test(s) && !/type/i.test(s); }) || (L.phone + 1);
   if (addExtras && !h[L.via - 1]) { sh.getRange(L.headerRow, L.via).setValue('Via').setFontWeight('bold'); h[L.via - 1] = 'Via'; }
-  const extraKeys = ['type', 'supervisor', 'enteredBy', 'enteredAt'];
+  const extraKeys = ['type', 'supervisor', 'enteredBy', 'enteredAt', 'edited'];
   let next = L.via + 1;
   EXTRA_HEADERS.forEach(function (title, i) {
     let c = find(function (s) { return s.toLowerCase() === title.toLowerCase(); });
@@ -458,7 +460,7 @@ function layout_(sh, addExtras) {
     L[extraKeys[i]] = c;
     next = Math.max(next, c + 1);
   });
-  L.width = Math.max(L.phone, L.date, L.name, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.sn);
+  L.width = Math.max(L.phone, L.date, L.name, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited || 0, L.sn);
   return L;
 }
 
@@ -536,7 +538,7 @@ function readAllClaims_() {
 /* Recent claims (last 31 days) kept in the script cache so checks don't have to open the sheet.
    Cleared when someone edits the sheet by hand (onEdit) and updated on every registration. */
 const IDX_TTL = 300;          // seconds
-const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy'];
+const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy', 'enteredAt'];
 
 function recentClaims_() {
   const today = todayDay_();
@@ -748,10 +750,11 @@ function dayStr_(day) {
 }
 
 /** Latest registration of this key that is still inside the lock window, or null. */
-function findLock_(key, rows, today) {
+function findLock_(key, rows, today, skip) {
   let best = null;
   rows.forEach(function (r) {
     if (r.day === null || !hasKey_(r.keys, key)) return;
+    if (skip && r.category === skip.category && r.row === skip.row) return;   // the record being edited
     if (today - r.day <= CFG.LOCK_DAYS && (!best || r.day > best.day)) best = r;
   });
   return best;
@@ -759,7 +762,8 @@ function findLock_(key, rows, today) {
 
 function claimView_(r, today) {
   const v = {
-    category: r.categoryLabel, date: dayStr_(r.day), name: r.name, phone: r.phone, via: r.via,
+    category: r.categoryLabel, catKey: r.category, row: r.row, enteredAt: r.enteredAt || '',
+    date: dayStr_(r.day), name: r.name, phone: r.phone, via: r.via,
     type: r.type, enteredBy: r.enteredBy, day: r.day,
     supervisor: r.supervisor || ((r.via.match(/\(([^)]+)\)/) || [])[1] || '').trim(),   // old rows: "name(supervisor)"
   };
@@ -773,12 +777,12 @@ function claimView_(r, today) {
 
 /* ───────────────────────── Check + Register ───────────────────────── */
 
-function checkPhone(token, phone, withHistory) {
+function checkPhone(token, phone, withHistory, skip) {
   auth_(token);
   const p = parseNewPhone_(phone);
   if (!p.valid) return p;
   const recent = recentClaims_();
-  const lockRow = findLock_(p.key, recent.rows, recent.today);
+  const lockRow = findLock_(p.key, recent.rows, recent.today, skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null);
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
   if (withHistory) {
     const all = readAllClaims_();
@@ -789,6 +793,33 @@ function checkPhone(token, phone, withHistory) {
   return out;
 }
 
+/** Validates 1–3 phone numbers. Returns { keys, formatted: '0911 51 83 75 / +971501234567' } or throws. */
+function parsePhones_(list) {
+  list = (Array.isArray(list) ? list : [list]).map(function (x) { return String(x || '').trim(); }).filter(String);
+  if (!list.length) throw new Error('Enter the customer phone number.');
+  if (list.length > CFG.MAX_PHONES) throw new Error('Up to ' + CFG.MAX_PHONES + ' phone numbers per customer.');
+  const keys = [], shown = [];
+  list.forEach(function (x) {
+    const p = parseNewPhone_(x);
+    if (!p.valid) throw new Error(x + ': ' + p.error);
+    if (hasKey_(keys, p.key)) return;                       // same number twice
+    keys.push(p.key); shown.push(p.formatted);
+  });
+  return { keys: keys, formatted: shown.join(' / ') };
+}
+
+function agentFields_(agentId) {
+  const agent = readAgents_().filter(function (a) { return a.id === agentId && a.active; })[0];
+  if (!agent) throw new Error('Choose the agent from the list.');
+  const supervisor = agent.type === 'Supervisor' ? agent.name : agent.supervisor;
+  return { agent: agent, supervisor: supervisor || '', via: agent.name + (supervisor && agent.type !== 'Supervisor' ? ' (' + supervisor + ')' : '') };
+}
+
+function firstLock_(keys, rows, today, skip) {
+  for (let i = 0; i < keys.length; i++) { const h = findLock_(keys[i], rows, today, skip); if (h) return h; }
+  return null;
+}
+
 function register(token, data) {
   const u = auth_(token, ['admin', 'entry']);
   const cat = CATEGORIES.filter(function (c) { return c.key === data.category; })[0];
@@ -796,51 +827,140 @@ function register(token, data) {
   const name = String(data.name || '').trim().replace(/\s+/g, ' ');
   if (!name) throw new Error('Customer name is required.');
   if (name.length > 80) throw new Error('Customer name is too long.');
-  const p = parseNewPhone_(data.phone);
-  if (!p.valid) throw new Error(p.error);
-  const agent = readAgents_().filter(function (a) { return a.id === data.agentId && a.active; })[0];
-  if (!agent) throw new Error('Choose the agent from the list.');
-  const supervisor = agent.type === 'Supervisor' ? agent.name : agent.supervisor;
-  const via = agent.name + (supervisor && agent.type !== 'Supervisor' ? ' (' + supervisor + ')' : '');
+  const ph = parsePhones_(data.phones || data.phone);
+  const a = agentFields_(data.agentId);
 
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const ssTz = ss.getSpreadsheetTimeZone();
+    const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     const recent = recentClaims_();
     const today = recent.today;
-    const hit = findLock_(p.key, recent.rows, today);
+    const hit = firstLock_(ph.keys, recent.rows, today);
     if (hit) return { ok: false, lock: claimView_(hit, today) };
 
     const sh = categorySheet_(cat, true);
     const L = layout_(sh, true);
     const r = lastDataRow_(sh, L) + 1;
     if (r > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 50);
-    const range = sh.getRange(r, 1, 1, L.width);
-    const vals = range.getValues()[0];
-    const set = function (c, v) { if (c) vals[c - 1] = v; };
     const todayStr = Utilities.formatDate(new Date(), CFG.TZ, 'yyyy-MM-dd');
-    set(L.date, Utilities.parseDate(todayStr, ssTz, 'yyyy-MM-dd'));
-    set(L.name, name);
-    set(L.phone, p.formatted);
-    set(L.via, via);
-    set(L.type, agent.type);
-    set(L.supervisor, supervisor || '');
-    set(L.enteredBy, u.name || u.username);
-    set(L.enteredAt, nowStr_());
-    if (L.phone) sh.getRange(r, L.phone).setNumberFormat('@');
-    if (L.enteredAt) sh.getRange(r, L.enteredAt).setNumberFormat('@');
-    range.setValues([vals]);
-    if (L.date) sh.getRange(r, L.date).setNumberFormat('dd/mm/yyyy');
-    SpreadsheetApp.flush();
-    recent.rows.push({ day: today, keys: [p.key], category: cat.key, categoryLabel: cat.label, row: r, name: name, phone: p.formatted,
-      via: via, type: agent.type, supervisor: supervisor || '', enteredBy: u.name || u.username });
+    const enteredBy = u.name || u.username, enteredAt = nowStr_();
+    writeClaimRow_(sh, L, r, {
+      date: Utilities.parseDate(todayStr, ssTz, 'yyyy-MM-dd'), name: name, phone: ph.formatted, via: a.via,
+      type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt, edited: '',
+    });
+    recent.rows.push({ day: today, keys: ph.keys, category: cat.key, categoryLabel: cat.label, row: r, name: name, phone: ph.formatted,
+      via: a.via, type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt });
     idxPut_(recent.rows, today);
     return {
-      ok: true, category: cat.label, row: r, name: name, phone: p.formatted, agent: agent.name, agentType: agent.type,
-      supervisor: supervisor || '', date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS),
+      ok: true, category: cat.label, catKey: cat.key, row: r, name: name, phone: ph.formatted, agent: a.agent.name, agentType: a.agent.type,
+      supervisor: a.supervisor, date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS), enteredAt: enteredAt,
     };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Writes one claim row (only the columns this system manages). */
+function writeClaimRow_(sh, L, r, v) {
+  const range = sh.getRange(r, 1, 1, L.width);
+  const vals = range.getValues()[0];
+  const set = function (c, x) { if (c && x !== undefined) vals[c - 1] = x; };
+  set(L.date, v.date); set(L.name, v.name); set(L.phone, v.phone); set(L.via, v.via);
+  set(L.type, v.type); set(L.supervisor, v.supervisor); set(L.enteredBy, v.enteredBy); set(L.enteredAt, v.enteredAt); set(L.edited, v.edited);
+  if (L.phone) sh.getRange(r, L.phone).setNumberFormat('@');
+  if (L.enteredAt) sh.getRange(r, L.enteredAt).setNumberFormat('@');
+  range.setValues([vals]);
+  if (L.date && v.date) sh.getRange(r, L.date).setNumberFormat('dd/mm/yyyy');
+  SpreadsheetApp.flush();
+}
+
+function canEdit_(u, rec) {
+  if (u.role === 'admin') return true;
+  if (u.role !== 'entry') return false;
+  if (!rec.enteredAt || rec.enteredBy !== (u.name || u.username)) return false;
+  try {
+    const t = Utilities.parseDate(rec.enteredAt, CFG.TZ, 'dd/MM/yyyy HH:mm').getTime();
+    return Date.now() - t <= CFG.EDIT_HOURS * 3600 * 1000;
+  } catch (e) { return false; }
+}
+
+/** Data entry: their own entries from the last 24 hours (editable). Admin: everything they entered recently. */
+function listMyEntries(token) {
+  const u = auth_(token, ['admin', 'entry']);
+  const recent = recentClaims_();
+  const me = u.name || u.username;
+  return recent.rows.filter(function (r) { return r.enteredBy === me && r.enteredAt && canEdit_(u, r); })
+    .sort(function (a, b) { return stampMs_(b.enteredAt) - stampMs_(a.enteredAt); })
+    .slice(0, 60).map(function (r) { return claimView_(r, recent.today); });
+}
+
+function stampMs_(s) { try { return Utilities.parseDate(s, CFG.TZ, 'dd/MM/yyyy HH:mm').getTime(); } catch (e) { return 0; } }
+
+/**
+ * Fix a registration. data = { catKey, row, expectName, expectPhone, category, name, phones, agentId (optional) }.
+ * The registration date is never changed, so editing cannot restart the 30-day lock.
+ */
+function editRecord(token, data) {
+  const u = auth_(token, ['admin', 'entry']);
+  const fromCat = CATEGORIES.filter(function (c) { return c.key === data.catKey; })[0];
+  const toCat = CATEGORIES.filter(function (c) { return c.key === (data.category || data.catKey); })[0];
+  if (!fromCat || !toCat) throw new Error('Choose a category.');
+  const name = String(data.name || '').trim().replace(/\s+/g, ' ');
+  if (!name) throw new Error('Customer name is required.');
+  if (name.length > 80) throw new Error('Customer name is too long.');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet(), ssTz = ss.getSpreadsheetTimeZone();
+    const sh = categorySheet_(fromCat, false);
+    if (!sh) throw new Error('Tab not found.');
+    const L = layout_(sh, true);
+    const row = Number(data.row);
+    if (!(row > L.headerRow)) throw new Error('Record not found.');
+    const cur = sh.getRange(row, 1, 1, L.width).getValues()[0];
+    const g = function (c) { return c ? cur[c - 1] : ''; };
+    const rec = { name: clean_(g(L.name)), phone: cellStr_(g(L.phone)), via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
+      enteredBy: clean_(g(L.enteredBy)), enteredAt: cellStr_(g(L.enteredAt)), date: g(L.date) };
+    if (rec.name !== String(data.expectName || '') || rec.phone !== String(data.expectPhone || '')) {
+      throw new Error('This record was changed or moved in the sheet. Refresh the list and try again.');
+    }
+    if (!canEdit_(u, rec)) throw new Error('You can only edit your own entries from the last ' + CFG.EDIT_HOURS + ' hours. Ask an admin to change this one.');
+
+    // phones: re-validate only if they were changed
+    const phonesIn = (Array.isArray(data.phones) ? data.phones : [data.phones]).map(function (x) { return String(x || '').trim(); }).filter(String);
+    const unchanged = phonesIn.join(' / ') === rec.phone || (phonesIn.length === 1 && phonesIn[0] === rec.phone);
+    let phone = rec.phone, keys = phoneKeys_(rec.phone);
+    if (!unchanged) { const ph = parsePhones_(phonesIn); phone = ph.formatted; keys = ph.keys; }
+
+    let via = rec.via, type = rec.type, supervisor = rec.supervisor;
+    if (data.agentId) { const a = agentFields_(data.agentId); via = a.via; type = a.agent.type; supervisor = a.supervisor; }
+
+    const recent = recentClaims_();
+    const today = recent.today;
+    if (!unchanged) {
+      const hit = firstLock_(keys, recent.rows, today, { category: fromCat.key, row: row });
+      if (hit) return { ok: false, lock: claimView_(hit, today) };
+    }
+    const edited = (u.name || u.username) + ', ' + nowStr_();
+    let outCat = fromCat, outRow = row;
+    if (toCat.key === fromCat.key) {
+      writeClaimRow_(sh, L, row, { name: name, phone: phone, via: via, type: type, supervisor: supervisor, edited: edited });
+    } else {
+      // move to the other tab, keeping the original date and who entered it; the old row is blanked
+      const sh2 = categorySheet_(toCat, true), L2 = layout_(sh2, true);
+      const r2 = lastDataRow_(sh2, L2) + 1;
+      if (r2 > sh2.getMaxRows()) sh2.insertRowsAfter(sh2.getMaxRows(), 50);
+      writeClaimRow_(sh2, L2, r2, { date: rec.date, name: name, phone: phone, via: via, type: type, supervisor: supervisor,
+        enteredBy: rec.enteredBy, enteredAt: rec.enteredAt, edited: edited + ' (moved from ' + fromCat.label + ')' });
+      [L.date, L.name, L.phone, L.via, L.type, L.supervisor, L.enteredBy, L.enteredAt, L.edited].forEach(function (c) { if (c) sh.getRange(row, c).clearContent(); });
+      outCat = toCat; outRow = r2;
+    }
+    CacheService.getScriptCache().remove('idx:meta');
+    const fresh = recentClaims_();
+    const updated = fresh.rows.filter(function (r) { return r.category === outCat.key && r.row === outRow; })[0];
+    return { ok: true, record: updated ? claimView_(updated, fresh.today) : null };
   } finally {
     lock.releaseLock();
   }
@@ -849,7 +969,7 @@ function register(token, data) {
 /* ───────────────────────── Records (viewer/admin) ───────────────────────── */
 
 function listRecords(token, f) {
-  auth_(token, ['admin', 'viewer']);
+  const me = auth_(token, ['admin', 'viewer']);
   f = f || {};
   const days = Number(f.days || 0);
   const all = days > 0 && days <= 31 ? recentClaims_() : readAllClaims_();   // recent periods: fast path
@@ -876,7 +996,7 @@ function listRecords(token, f) {
     if (r.day === today) stats.today[r.categoryLabel]++;
     if (r.day !== null && today - r.day < 30 && today - r.day >= 0) stats.last30[r.categoryLabel]++;
   });
-  return { total: total, shown: Math.min(total, CFG.MAX_RECORDS), stats: stats, rows: rows.slice(0, CFG.MAX_RECORDS).map(function (r) { return claimView_(r, today); }) };
+  return { canEdit: me.role === 'admin', total: total, shown: Math.min(total, CFG.MAX_RECORDS), stats: stats, rows: rows.slice(0, CFG.MAX_RECORDS).map(function (r) { return claimView_(r, today); }) };
 }
 
 /* ───────────────────────── Helpers ───────────────────────── */
