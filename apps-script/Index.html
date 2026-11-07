@@ -517,6 +517,11 @@ function bindPhone(input, el, skip, getWho, getCtx) {
         if (r.lock && r.lock.sameAgent) {
           input.dataset.state = 'free';
           msgBox(el, 'ok', '<b>Same agent ✓</b> ' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) + '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + '. They can register this customer again.');
+        } else if (r.lock && r.lock.sameCategory) {
+          input.dataset.state = 'locked';
+          msgBox(el, 'bad', '<span class="big">Already registered in ' + esc(r.lock.category) + '</span>' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) +
+            '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + ' (' + esc(r.lock.name) + '). It can\'t be registered in ' + esc(r.lock.category) + ' again until ' + esc(r.lock.freeFrom) +
+            '. The same agent can move this customer to another category.');
         } else if (r.lock) {
           input.dataset.state = 'locked';
           const hasAgent = who && (who.agentId || who.agentName);
@@ -562,7 +567,7 @@ function addPhoneRow(container, value, skip, onChange, getWho, getCtx) {
   return inp;
 }
 const MAX_PHONES = 3;
-const regWho = () => ({ agentId: S.agent ? S.agent.id : '', customerName: $('regName').value.trim() });
+const regWho = () => ({ agentId: S.agent ? S.agent.id : '', customerName: $('regName').value.trim(), category: S.cat || '' });
 const regCtx = () => ({ category: S.cat, customerName: $('regName').value.trim() });
 bindPhone($('regPhone'), $('regPhoneStatus'), null, regWho, regCtx);
 function syncRegAdd() { $('regAddPhone').disabled = document.querySelectorAll('#tRegister .reg-phone').length >= MAX_PHONES; }
@@ -595,7 +600,7 @@ $('regForm').onsubmit = async (e) => {
       $('regExtraPhones').innerHTML = ''; syncRegAdd();
       $('regAgent').value = ''; S.agent = null; showSup(); $('regName').focus();
     } else {
-      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, 'Not registered — number already claimed') +
+      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, r.lock.sameCategory ? 'Not registered — already registered by this agent in ' + esc(r.lock.category) : 'Not registered — number already claimed') +
         (r.canOverride ? '<div class="why">Admin: if this is a different person, you can still register them.<br><button class="btn ghost small" type="button" id="ovBtn" style="margin-top:8px">Register anyway…</button></div>' : '') + '</div>';
       if (r.canOverride) $('ovBtn').onclick = () => overrideRegister(r.lock);
 
@@ -659,7 +664,7 @@ function openEdit(rec) {
   const phones = String(rec.phone || '').split(' / ').filter(Boolean);
   const box = $('ePhones');
   const syncAdd = () => { $('eAddPhone').disabled = box.querySelectorAll('.reg-phone').length >= MAX_PHONES; const xs = box.querySelectorAll('.xbtn'); xs.forEach((x) => (x.style.visibility = xs.length > 1 ? 'visible' : 'hidden')); };
-  const eWho = () => Object.assign(agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() }, { customerName: ($('eName') ? $('eName').value.trim() : rec.name) });
+  const eWho = () => Object.assign(agent ? { agentId: agent.id } : { agentName: String(rec.via || '').replace(/\(.*?\)/g, '').trim() }, { customerName: ($('eName') ? $('eName').value.trim() : rec.name), category: cat });
   const eCtx = () => ({ category: cat, customerName: $('eName') ? $('eName').value.trim() : rec.name });
   (phones.length ? phones : ['']).forEach((p) => addPhoneRow(box, p, skip, syncAdd, eWho, eCtx));
   $('eAddPhone').onclick = () => addPhoneRow(box, '', skip, syncAdd, eWho, eCtx).focus();

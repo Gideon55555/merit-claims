@@ -712,7 +712,7 @@ function normPhone_(p) {
   if (d.indexOf('251') === 0 && d.length >= 11) { d = '0' + d.slice(3); intl = false; }
   if (!intl) {
     if (/^[1-9]/.test(d) && d.length <= 9) d = '0' + d;      // leading 0 lost (number stored as a number)
-    else if (/^[1-9]/.test(d) && d.length >= 11) intl = true; // e.g. 971501234567 typed without +
+    else if (/^[1-9]/.test(d) && d.length >= 10) intl = true; // foreign typed without + (e.g. 9725225163); Ethiopian without 0 has 9 digits
   }
   if (intl) return d.length >= 7 && d.length <= 15 ? { digits: d, intl: true } : null;
   return /^0[1-9]\d{5,}$/.test(d) ? { digits: d, intl: false } : null;
@@ -990,12 +990,13 @@ function checkPhone(token, phone, withHistory, skip, who) {
   const item = { key: p.key, digits: p.digits, intl: p.intl };
   const sk = skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null;
   const agentName = who ? (who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '')) : '';
-  const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName);
+  const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName, who && who.category ? String(who.category) : '');
   const lockRow = blocking || findLocks_(item, recent.rows, recent.today, sk, custName)[0] || null;
   const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
   if (lockRow) {
     out.lock.match = matchReason_(lockRow, item, custName);     // 'number' | 'hidden' | 'name'
     out.lock.sameAgent = !blocking;
+    out.lock.sameCategory = !!blocking && !!agentName && sameAgent_(blocking, agentName);   // owner, same category again
   }
 
   if (withHistory) {
@@ -1033,9 +1034,12 @@ function agentFields_(agentId) {
  * First claim that blocks these numbers. A claim by the SAME agent does not block:
  * the agent who owns the customer may register them again (e.g. Expecting → Office Visit → Site Visit).
  */
-function firstLock_(items, rows, today, skip, agentName, custName) {
+function firstLock_(items, rows, today, skip, agentName, custName, category) {
   for (let i = 0; i < items.length; i++) {
     const all = findLocks_(items[i], rows, today, skip, custName);
+    // the owner may move the customer to ANOTHER category, but not register them again in the same one
+    const again = category ? all.filter(function (r) { return r.category === category && sameAgent_(r, agentName); })[0] : null;
+    if (again) return again;
     let hits = all.filter(function (r) { return !sameAgent_(r, agentName); });
     // an admin already approved this agent's customer as a different person → other claims only block if the name matches
     if (hits.length && agentName && custName && all.some(function (r) { return sameAgent_(r, agentName) && isOverride_(r) && sameCustomerName_(r.name, custName); })) {
@@ -1101,10 +1105,10 @@ function register(token, data) {
     const recent = recentClaims_();
     const today = recent.today;
     let note = '';
-    const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name);
+    const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name, cat.key);
     if (hit) {
       const ov = data.override;
-      if (!ov) return { ok: false, lock: claimView_(hit, today), canOverride: u.role === 'admin' };
+      if (!ov) { const lv = claimView_(hit, today); lv.sameCategory = sameAgent_(hit, a.agent.name); return { ok: false, lock: lv, canOverride: u.role === 'admin' }; }
       if (u.role !== 'admin') throw new Error('Only an admin can register a claimed number.');
       const reason = String(ov.reason || '').trim();
       if (reason.length < 5) throw new Error('Write the reason (e.g. "different person, confirmed by supervisor").');
@@ -1211,8 +1215,9 @@ function editRecord(token, data) {
 
     const recent = recentClaims_();
     const today = recent.today;
-    if (!unchanged || data.agentId || name !== rec.name) {
-      const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name);
+    if (!unchanged || data.agentId || toCat.key !== fromCat.key) {
+      const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name,
+        toCat.key !== fromCat.key ? toCat.key : '');
       if (hit) return { ok: false, lock: claimView_(hit, today) };
     }
     const edited = (u.name || u.username) + ', ' + nowStr_();
