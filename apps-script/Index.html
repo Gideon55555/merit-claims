@@ -177,7 +177,7 @@
 <div id="vApp" class="hidden">
   <header>
     <div class="bar">
-      <div class="brand">Merit Properties<small>Customer Claim System</small></div>
+      <div class="brand">Merit Properties<small>Customer Claim System <span id="verTag" style="opacity:.7"></span></small></div>
       <div class="me"><span id="meName"></span><span class="role" id="meRole"></span>
         <button id="btnChangePw" type="button">Password</button><button id="btnLogout" type="button">Log out</button></div>
     </div>
@@ -359,6 +359,7 @@ async function startApp() {
   showOnly('vApp');
   $('meName').textContent = S.user.name || S.user.username;
   $('meRole').textContent = ROLE_LABEL[S.user.role] || S.user.role;
+  $('verTag').textContent = S.user.version ? '· server ' + S.user.version : '· server: OLD CODE, deploy a new version';
   const tabs = TABS.filter((t) => t.roles.indexOf(S.user.role) >= 0);
   $('nav').innerHTML = tabs.map((t) => '<button type="button" data-tab="' + t.id + '">' + t.label + '</button>').join('');
   $('nav').querySelectorAll('button').forEach((b) => (b.onclick = () => openTab(b.dataset.tab)));

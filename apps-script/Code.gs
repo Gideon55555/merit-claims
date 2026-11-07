@@ -10,6 +10,8 @@
  *  - Roles: admin (everything), entry (register + check), viewer (records + check).
  */
 
+const CODE_VERSION = '2026-11-07 v3';
+
 const CFG = {
   TZ: 'Africa/Addis_Ababa',   // "today" is calculated in this time zone
   LOCK_DAYS: 30,              // locked for 30 days, free from day 31
@@ -188,7 +190,8 @@ function login(username, password) {
   try { usersSheet_().getRange(userRow_(u.username), 9).setValue(nowStr_()); cache.remove('users'); } catch (e) {}
   const token = Utilities.getUuid() + Utilities.getUuid();
   cache.put('sess:' + token, u.username, CFG.SESSION_SECONDS);
-  return { token: token, user: publicUser_(u) };
+  const pu = publicUser_(u); pu.version = CODE_VERSION;
+  return { token: token, user: pu };
 }
 
 function logout(token) {
@@ -197,7 +200,9 @@ function logout(token) {
 }
 
 function whoAmI(token) {
-  return publicUser_(auth_(token, null, true));
+  const u = publicUser_(auth_(token, null, true));
+  u.version = CODE_VERSION;
+  return u;
 }
 
 function changePassword(token, oldPw, newPw) {
@@ -1488,3 +1493,46 @@ function cellStr_(v) {
   return clean_(v);
 }
 function fmtCell_(v) { return cellStr_(v); }
+
+
+/* ───────────────────────── Diagnose (run from the Apps Script editor) ───────────────────────── */
+
+/**
+ * Select "diagnose" in the function list and click Run. It checks the LIVE sheet with the code in the editor
+ * and writes to the Execution log what the system sees for one number. Change the number below if needed.
+ */
+function diagnose() {
+  const PHONE = '0911 11 10';
+  const out = [];
+  const log = function (x) { out.push(x); };
+  log('Code version: ' + CODE_VERSION);
+  const p = parseNewPhone_(PHONE);
+  log('Number: ' + PHONE + ' → match key ' + p.key);
+  const ss = SpreadsheetApp.getActiveSpreadsheet(), ssTz = ss.getSpreadsheetTimeZone(), today = todayDay_();
+  log('Today: ' + dayStr_(today) + ' · sheet time zone: ' + ssTz);
+  CATEGORIES.forEach(function (cat) {
+    const sh = categorySheet_(cat, false);
+    if (!sh) { log(cat.label + ': TAB NOT FOUND'); return; }
+    const L = layout_(sh, false);
+    log(cat.label + ' → tab "' + sh.getName() + '", header row ' + L.headerRow + ', last row ' + sh.getLastRow() +
+      ', columns: date ' + L.date + ' name ' + L.name + ' phone ' + L.phone + ' agent ' + L.via);
+    const full = readClaims_(cat, today, ssTz).rows.filter(function (r) { return hasKey_(r.keys, p.key); });
+    const recent = readClaimsRecent_(cat, today, ssTz);
+    const recentHits = recent.filter(function (r) { return hasKey_(r.keys, p.key); });
+    log('   rows read bottom-up: ' + recent.length + (recent.length ? ' (from row ' + recent[0].row + ')' : ''));
+    full.forEach(function (r) {
+      const inRecent = recentHits.some(function (x) { return x.row === r.row; });
+      log('   row ' + r.row + ' | date ' + dayStr_(r.day) + ' (' + (r.day === null ? '-' : today - r.day) + ' days ago) | ' + r.name + ' | ' + r.phone + ' | ' + r.via +
+        ' | found by bottom-up read: ' + (inRecent ? 'YES' : 'NO'));
+    });
+    if (!full.length) log('   (no rows with this number in this tab)');
+  });
+  clearCaches_();
+  const rc = recentClaims_();
+  const locks = findLocks_({ key: p.key, digits: p.digits, intl: p.intl }, rc.rows, rc.today, null, null);
+  log('RESULT: ' + (locks.length ? 'CLAIMED by ' + locks[0].via + ' (' + locks[0].name + ', ' + dayStr_(locks[0].day) + ', locked until ' + dayStr_(locks[0].day + CFG.LOCK_DAYS) + ')' : 'FREE'));
+  const triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'onSheetChange'; }).length;
+  log('Change alarm: ' + (triggers ? 'ON' : 'OFF (run installTriggers)'));
+  Logger.log(out.join('\n'));
+  return out.join('\n');
+}
