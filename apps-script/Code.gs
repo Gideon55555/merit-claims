@@ -10,7 +10,7 @@
  *  - Roles: admin (everything), entry (register + check), viewer (records + check).
  */
 
-const CODE_VERSION = '2026-11-07 v3';
+const CODE_VERSION = '2026-11-07 v5';
 
 const CFG = {
   TZ: 'Africa/Addis_Ababa',   // "today" is calculated in this time zone
@@ -102,6 +102,7 @@ function onOpen() {
     .addItem('Reset admin password', 'resetAdminFromMenu')
     .addItem('Refresh data now', 'refreshFromMenu')
     .addItem('Turn on change alarm (once)', 'installTriggersFromMenu')
+    .addItem('Repair phone numbers stored as dates (once)', 'repairFromMenu')
     .addToUi();
 }
 
@@ -151,6 +152,42 @@ function setup() {
 
 function setupFromMenu() {
   SpreadsheetApp.getUi().alert(setup());
+}
+
+function repairFromMenu() {
+  SpreadsheetApp.getUi().alert(repairPhoneCells());
+}
+
+/**
+ * One-time repair: Google Sheets stored some typed numbers ("0911 11 10") as dates. This turns every phone cell
+ * in the three tabs that holds a date or a number back into plain text, exactly as it is shown. Nothing else changes.
+ */
+function repairPhoneCells() {
+  const lock = LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    const msgs = [];
+    CATEGORIES.forEach(function (cat) {
+      const sh = categorySheet_(cat, false);
+      if (!sh) return;
+      const L = layout_(sh, false), last = sh.getLastRow();
+      if (last <= L.headerRow) return;
+      const n = last - L.headerRow, range = sh.getRange(L.headerRow + 1, L.phone, n, 1);
+      const raw = range.getValues(), shown = range.getDisplayValues();
+      let fixed = 0;
+      const out = raw.map(function (r, i) {
+        const v = r[0];
+        if (Object.prototype.toString.call(v) === '[object Date]') { fixed++; return [shown[i][0]]; }   // "0911 11 10" stored as a date
+        if (typeof v === 'number') { fixed++; return [String(Math.round(v))]; }                        // full digits, as text
+        return [v];
+      });
+      if (fixed) { range.setNumberFormat('@'); range.setValues(out); }
+      msgs.push(cat.label + ': ' + fixed + ' phone cells repaired');
+    });
+    clearCaches_();
+    const msg = msgs.join('\n');
+    Logger.log(msg);
+    return msg;
+  } finally { lock.releaseLock(); }
 }
 
 function installTriggersFromMenu() {
@@ -483,13 +520,22 @@ function layout_(sh, addExtras) {
 }
 
 /** Turns raw sheet values (starting at sheet row firstRow) into claim objects. */
-function parseClaims_(cat, L, vals, firstRow, today, ssTz) {
+/**
+ * Google Sheets turns a typed "0911 11 10" into a DATE (year 0911, month 11, day 10). It still SHOWS "0911 11 10",
+ * so for phone cells we use the text as shown on screen (phoneShown) whenever the stored value is a date or number.
+ */
+function phoneCell_(raw, shown) {
+  if (Object.prototype.toString.call(raw) === '[object Date]') return String(shown || '');
+  return raw;                                               // numbers keep all their digits (the screen may show 2.5E+11)
+}
+
+function parseClaims_(cat, L, vals, firstRow, today, ssTz, shown) {
   const out = [], cands = [];
   let lastDataRow = 0;
   for (let i = 0; i < vals.length; i++) {
     const r = vals[i];
     const g = function (c) { return c ? r[c - 1] : ''; };
-    const name = clean_(g(L.name)), phoneRaw = g(L.phone);
+    const name = clean_(g(L.name)), phoneRaw = phoneCell_(g(L.phone), shown ? shown[i] : '');
     const phoneStr = cellStr_(phoneRaw);
     if (!name && !phoneStr) continue;
     lastDataRow = firstRow + i;
@@ -514,7 +560,9 @@ function readClaims_(cat, today, ssTz) {
   const L = layout_(sh, false);
   const last = sh.getLastRow();
   if (last <= L.headerRow) return { rows: [], lastDataRow: L.headerRow, layout: L };
-  const res = parseClaims_(cat, L, sh.getRange(L.headerRow + 1, 1, last - L.headerRow, L.width).getValues(), L.headerRow + 1, today, ssTz);
+  const n = last - L.headerRow;
+  const shown = sh.getRange(L.headerRow + 1, L.phone, n, 1).getDisplayValues().map(function (r) { return r[0]; });
+  const res = parseClaims_(cat, L, sh.getRange(L.headerRow + 1, 1, n, L.width).getValues(), L.headerRow + 1, today, ssTz, shown);
   return { rows: res.rows, lastDataRow: res.lastDataRow || L.headerRow, layout: L };
 }
 
@@ -532,10 +580,11 @@ function readClaimsRecent_(cat, today, ssTz) {
   if (!sh) throw new Error('Tab for "' + cat.label + '" not found. Tab names must contain "' + cat.label.split(' ')[0] + '".');
   const L = layout_(sh, false);
   const cutoff = today - 31, tooOld = cutoff - 120, CHUNK = 1000;
-  let end = sh.getLastRow(), vals = [], first = end + 1, oldStreak = 0, stop = false;
+  let end = sh.getLastRow(), vals = [], shownAll = [], first = end + 1, oldStreak = 0, stop = false;
   while (end > L.headerRow && !stop) {
     const start = Math.max(L.headerRow + 1, end - CHUNK + 1);
     const chunk = sh.getRange(start, 1, end - start + 1, L.width).getValues();
+    const shown = sh.getRange(start, L.phone, end - start + 1, 1).getDisplayValues().map(function (r) { return r[0]; });
     let cut = 0;                                              // keep everything below the stopping point
     for (let i = chunk.length - 1; i >= 0; i--) {
       const r = chunk[i];
@@ -548,9 +597,9 @@ function readClaimsRecent_(cat, today, ssTz) {
       if (c[0] < tooOld) continue;                            // probably a typo
       if (++oldStreak >= STOP_AFTER_OLD_ROWS) { stop = true; cut = i; break; }
     }
-    vals = chunk.slice(cut).concat(vals); first = start + cut; end = start - 1;
+    vals = chunk.slice(cut).concat(vals); shownAll = shown.slice(cut).concat(shownAll); first = start + cut; end = start - 1;
   }
-  return parseClaims_(cat, L, vals, first, today, ssTz).rows;
+  return parseClaims_(cat, L, vals, first, today, ssTz, shownAll).rows;
 }
 
 /** Reads EVERY row of all three tabs. Never returns silently empty: if a tab can't be read, it throws. */
@@ -1402,7 +1451,7 @@ function editRecord(token, data) {
     if (!(row > L.headerRow)) throw new Error('Record not found.');
     const cur = sh.getRange(row, 1, 1, L.width).getValues()[0];
     const g = function (c) { return c ? cur[c - 1] : ''; };
-    const rec = { name: clean_(g(L.name)), phone: cellStr_(g(L.phone)), via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
+    const rec = { name: clean_(g(L.name)), phone: cellStr_(phoneCell_(g(L.phone), sh.getRange(row, L.phone).getDisplayValue())), via: clean_(g(L.via)), type: clean_(g(L.type)), supervisor: clean_(g(L.supervisor)),
       enteredBy: clean_(g(L.enteredBy)), enteredAt: cellStr_(g(L.enteredAt)), date: g(L.date), note: clean_(g(L.note)), custNote: clean_(g(L.custNote)) };
     if (rec.name !== String(data.expectName || '') || rec.phone !== String(data.expectPhone || '')) {
       throw new Error('This record was changed or moved in the sheet. Refresh the list and try again.');
@@ -1527,6 +1576,30 @@ function diagnose() {
     });
     if (!full.length) log('   (no rows with this number in this tab)');
   });
+  // deep search: any cell in the phone column that contains these digits in any form
+  log('DEEP SEARCH for phone cells containing "' + p.key.slice(-4) + '" (any format):');
+  let shown = 0;
+  CATEGORIES.forEach(function (cat) {
+    const sh = categorySheet_(cat, false);
+    if (!sh) return;
+    const L = layout_(sh, false), last = sh.getLastRow();
+    if (last <= L.headerRow) return;
+    const n = last - L.headerRow;
+    const ph = sh.getRange(L.headerRow + 1, L.phone, n, 1).getValues();
+    const disp = sh.getRange(L.headerRow + 1, L.phone, n, 1).getDisplayValues();
+    const nm = sh.getRange(L.headerRow + 1, L.name, n, 1).getDisplayValues();
+    const dt = sh.getRange(L.headerRow + 1, L.date, n, 1).getDisplayValues();
+    for (let i = 0; i < n && shown < 25; i++) {
+      const raw = ph[i][0], d = String(disp[i][0]);
+      if (String(raw).replace(/\D/g, '').indexOf(p.key.slice(-4)) >= 0 || d.replace(/\D/g, '').indexOf(p.key.slice(-4)) >= 0) {
+        if (String(raw).replace(/\D/g, '').indexOf(p.key.slice(2, 6)) < 0 && d.replace(/\D/g, '').indexOf(p.key.slice(2, 6)) < 0) continue;
+        shown++;
+        log('   ' + cat.label + ' row ' + (L.headerRow + 1 + i) + ' | date shown "' + dt[i][0] + '" | name "' + nm[i][0] + '" | phone shown "' + d +
+          '" | stored as ' + (typeof raw) + ' ' + JSON.stringify(raw) + ' → keys ' + JSON.stringify(phoneKeys_(raw)));
+      }
+    }
+  });
+  if (!shown) log('   nothing found');
   clearCaches_();
   const rc = recentClaims_();
   const locks = findLocks_({ key: p.key, digits: p.digits, intl: p.intl }, rc.rows, rc.today, null, null);
