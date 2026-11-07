@@ -783,12 +783,16 @@ function cellDayCands_(v, ssTz, today) {
   return out.filter(function (x) { return x <= today; });
 }
 
-/** Picks one day per row: ambiguous rows take the candidate closest to nearby clear dates (sheets are in date order). */
+/**
+ * Picks one day per row: ambiguous rows take the candidate closest to nearby clear dates (sheets are in date order).
+ * Rows with a blank, unreadable or impossible date take the date of the nearest dated row above (or below),
+ * so they still lock their number instead of being ignored.
+ */
 function resolveDays_(cands) {
   const clear = [];
   cands.forEach(function (c, i) { if (c.length === 1) clear.push(i); });
   let p = 0;
-  return cands.map(function (c, i) {
+  const days = cands.map(function (c, i) {
     if (c.length < 2) return c.length ? c[0] : null;
     while (p < clear.length && clear[p] < i) p++;
     const near = clear.slice(Math.max(0, p - 8), p).concat(clear.slice(p, p + 8)).map(function (j) { return cands[j][0]; });
@@ -797,6 +801,15 @@ function resolveDays_(cands) {
     const med = near[Math.floor(near.length / 2)];
     return Math.abs(c[1] - med) < Math.abs(c[0] - med) ? c[1] : c[0];
   });
+  if (days.length > 1) {                                      // fill missing dates from neighbours
+    let last = null;
+    const filled = days.slice();
+    for (let i = 0; i < days.length; i++) { if (days[i] !== null) last = days[i]; else if (last !== null) filled[i] = last; }
+    let next = null;
+    for (let i = days.length - 1; i >= 0; i--) { if (days[i] !== null) next = days[i]; else if (filled[i] === null && next !== null) filled[i] = next; }
+    return filled;
+  }
+  return days;
 }
 
 /** Single date cell → day number (used for text/serial values where order is known). */
@@ -1038,16 +1051,32 @@ function agentKey_(s) {
   return String(s || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9\u1200-\u137f]/g, '');
 }
 
-/** Does this claim row belong to the agent with this name? Old hand-typed rows often hold only the first name. */
+/** Lower-case words of a name, brackets included ("betlham(alemu)" → betlham, alemu). */
+function nameWords_(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\u1200-\u137f]+/g, ' ').trim().split(' ').filter(String);
+}
+
+/**
+ * Does this claim row belong to the agent with this name?
+ *  - rows made by this system: the agent's full name must match
+ *  - old hand-typed rows ("betlham(alemu)", "abdi"): all of the agent's names appear → yes;
+ *    only the first name appears → yes only if no other agent has that first name
+ *    (and never if the row names another agent's surname).
+ */
 function sameAgent_(row, agentName) {
   const a = agentKey_(row.via), b = agentKey_(agentName);
   if (!a || !b) return false;
   if (a === b) return true;
-  if (!row.type) {                                     // typed by hand before this system: "abdi", "betlham alemu(tinsu)"
-    const first = agentKey_(String(agentName).trim().split(/\s+/)[0]);
-    if (first && a === first) return true;
-  }
-  return false;
+  if (row.type) return false;
+  const tok = nameWords_(row.via), aw = nameWords_(agentName);
+  if (!tok.length || !aw.length) return false;
+  if (aw.every(function (w) { return tok.indexOf(w) >= 0; })) return true;
+  if (tok[0] !== aw[0]) return false;
+  const others = readAgents_().filter(function (x) {
+    return x.active && nameWords_(x.name)[0] === aw[0] && agentKey_(x.name) !== b;
+  });
+  if (others.some(function (o) { return nameWords_(o.name).slice(1).some(function (w) { return tok.indexOf(w) >= 0; }); })) return false;
+  return others.length === 0;
 }
 
 function agentNameById_(agentId) {
