@@ -151,6 +151,18 @@
   .hist { margin: 6px 0 4px; padding: 9px 12px; background: #f6f8f9; border: 1px solid var(--line); border-radius: 8px; font-size: 13.5px; color: #44525e; }
   .hist ul { margin: 4px 0 0; padding-left: 18px; }
   .hist li { margin: 2px 0; }
+  textarea { width: 100%; padding: 10px 12px; border: 1px solid #c9d1d7; border-radius: 8px; font: inherit; resize: vertical; outline: none; }
+  textarea:focus { border-color: var(--brand-2); box-shadow: 0 0 0 3px rgba(22,104,94,.15); }
+  .hist { max-height: 260px; overflow-y: auto; }
+  .hist li .cat { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: #e8eef2; color: #3a4a57; margin-right: 4px; }
+  .hist li .cat.now { background: var(--brand-soft); color: var(--brand); }
+  .hist li .cn { display: block; color: #5d6b78; font-size: 12.5px; margin-left: 2px; }
+  .chk-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 12px; }
+  .chk-card .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0 12px; }
+  @media (max-width: 700px) { .chk-card .two { grid-template-columns: 1fr; } }
+  .chk-card .box { background: #f6f8f9; border-radius: 8px; padding: 10px 12px; font-size: 14px; }
+  .chk-card .box b.big { font-size: 17px; letter-spacing: .5px; }
+  .nav-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: var(--gold); color: #fff; font-size: 12px; line-height: 18px; text-align: center; }
   .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--brand); font-weight: 600; cursor: pointer; font-size: 14px; }
   .linkbtn:disabled { color: #9aa5ae; cursor: default; }
   .phone-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
@@ -219,6 +231,7 @@
             <div id="regPhoneStatus"></div>
             <div id="regExtraPhones"></div>
             <button type="button" class="linkbtn" id="regAddPhone">+ Add another phone</button>
+            <label class="f" style="margin-top:8px"><span>Note <small class="muted" style="font-weight:400">(optional)</small></span><textarea id="regNote" rows="2" maxlength="300" placeholder="e.g. interested in 2-bedroom, will come with family"></textarea></label>
             <div class="row" style="margin-top:14px">
               <label class="f"><span>Agent type</span><select id="regType"></select></label>
               <label class="f"><span>Agent name</span>
@@ -275,6 +288,18 @@
       </div>
     </section>
 
+    <!-- Checks -->
+    <section id="tChecks" class="tab hidden">
+      <div class="card">
+        <div class="row" style="align-items:center;margin-bottom:6px"><div><h2>Number checks</h2>
+          <p class="hint" style="margin:0" id="chkHint"></p></div>
+          <div class="shrink"><button class="btn ghost small" type="button" id="chkRefresh">Refresh</button></div></div>
+        <div id="chkPending"></div>
+        <h3 style="font-size:15px;margin:22px 0 8px">Decided</h3>
+        <div id="chkDecided"></div>
+      </div>
+    </section>
+
     <!-- Users -->
     <section id="tUsers" class="tab hidden">
       <div class="card">
@@ -313,6 +338,7 @@ const CATS = { expecting: 'Expecting', office: 'Office Visit', site: 'Site Visit
 const TABS = [
   { id: 'tRegister', label: 'Register', roles: ['admin', 'entry'] },
   { id: 'tCheck', label: 'Check number', roles: ['admin', 'entry', 'viewer'] },
+  { id: 'tChecks', label: 'Checks', roles: ['admin', 'entry'] },
   { id: 'tRecords', label: 'Records', roles: ['admin', 'viewer'] },
   { id: 'tUsers', label: 'Users', roles: ['admin'] },
   { id: 'tAgents', label: 'Agents', roles: ['admin'] },
@@ -368,8 +394,9 @@ async function startApp() {
     const r = await call('getAgents', S.token);
     S.agents = r.agents; S.types = r.types;
     fillTypeSelects();
-    if (S.user.role === 'admin') renderAgents();
+    if (S.user && S.user.role === 'admin') renderAgents();
     loadMine();
+    loadChecks();
   } catch (e) { toast(e.message, true); }
 }
 
@@ -378,6 +405,7 @@ function openTab(id) {
   $('nav').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === id));
   if (id === 'tRecords' && !S.recLoaded) loadRecords();
   if (id === 'tUsers') loadUsers();
+  if (id === 'tChecks') loadChecks();
 }
 
 /* ---------- login ---------- */
@@ -500,7 +528,7 @@ function quickAddAgent(name) {
     try {
       const r = await call('addAgentQuick', S.token, { type: t, name: $('qName').value, supervisor: $('qSup').value, phone: $('qPhone').value });
       S.agents = r.agents;
-      if (S.user.role === 'admin') renderAgents();
+      if (S.user && S.user.role === 'admin') renderAgents();
       $('regType').value = r.agent.type; $('regAgent').disabled = false;
       $('regAgent').placeholder = 'Type to search ' + r.agent.type + ' names';
       $('regAgent').value = r.agent.name; S.agent = r.agent; showSup(); recheckPhones('#tRegister');
@@ -537,9 +565,10 @@ function bindPhone(input, el, skip, getWho, getCtx) {
     const my = ++seq;
     t = setTimeout(async () => {
       try {
+        if (!S.user) return;
         const who = getWho ? getWho() : null;
         const r = await call('checkPhone', S.token, input.value, false, skip || null, who);
-        if (my !== seq) return;
+        if (my !== seq || !S.user) return;
         if (!r.valid) { input.dataset.state = 'invalid'; return msgBox(el, 'warn', esc(r.error)); }
         if (r.lock && r.lock.sameAgent) {
           input.dataset.state = 'free';
@@ -553,8 +582,8 @@ function bindPhone(input, el, skip, getWho, getCtx) {
           input.dataset.state = 'locked';
           const hasAgent = who && (who.agentId || who.agentName);
           const why = r.lock.match === 'hidden' || r.lock.match === 'name'
-            ? '<div class="why">Same first 8 digits. With hidden digits this counts as the same customer, whatever name is typed.' +
-              (S.user.role === 'admin' ? ' If it really is a different person, you can use <b>Register anyway</b> after submitting.' : ' If it really is a different person, ask an admin.') + '</div>' : '';
+            ? '<div class="why">The first 8 digits are the same and the last digits are hidden, so it is blocked whatever name is typed. ' +
+              (S.user && S.user.role === 'admin' ? 'Compare both <b>full numbers</b>; if they are different, click <b>Checked</b> after submitting.' : 'Submit, then click <b>Send to admin</b>: an administrator will compare both full numbers.') + '</div>' : '';
           msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
         } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
         showHistory(el, input.value, skip, () => my === seq, getCtx);
@@ -562,22 +591,21 @@ function bindPhone(input, el, skip, getWho, getCtx) {
     }, 450);
   });
 }
-/* Previous registrations in the SAME category (Office Visit / Site Visit), shown under the phone check.
-   getCtx() → { category, customerName }. Not shown for Expecting. */
+/* ALL previous registrations of this number (whole sheet, every category), shown under the phone check. */
 async function showHistory(el, phone, skip, stillCurrent, getCtx) {
   const ctx = getCtx ? getCtx() : {};
-  if (!ctx.category || ctx.category === 'expecting') return;
-  const label = CATS[ctx.category];
   const box = document.createElement('div');
-  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up previous ' + esc(label) + 's…';
+  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up previous registrations…';
   el.appendChild(box);
   try {
-    const h = await call('phoneHistory', S.token, phone, skip || null, ctx);
+    const h = await call('phoneHistory', S.token, phone, skip || null);
     if (!stillCurrent()) return;
-    if (!h.length) { box.innerHTML = 'No previous ' + esc(label) + ' for this customer.'; return; }
-    box.innerHTML = '<b>Previous ' + esc(label) + 's:</b><ul>' + h.slice(0, 3).map((x) =>
-      '<li>' + esc(x.date) + ' by <b>' + esc(x.via || '—') + '</b>' + (x.name ? ' <span class="muted">(' + esc(x.name) + ')</span>' : '') +
-      (x.active ? ' <span class="tag lock">still claimed until ' + esc(x.endsOn) + '</span>' : ' <span class="muted">· was locked until ' + esc(x.endsOn) + '</span>') + '</li>').join('') + '</ul>';
+    if (!h.length) { box.innerHTML = 'No previous registrations of this number.'; return; }
+    box.innerHTML = '<b>Previous registrations (' + h.length + '):</b><ul>' + h.map((x) =>
+      '<li><span class="cat' + (x.catKey === ctx.category ? ' now' : '') + '">' + esc(x.category) + '</span>' + esc(x.date) + ' · <b>' + esc(x.name || '—') + '</b> ' + esc(x.phone) +
+      ' · by <b>' + esc(x.via || '—') + '</b> ' +
+      (x.active ? '<span class="tag lock">claimed until ' + esc(x.endsOn) + '</span>' : '<span class="muted">(ended ' + esc(x.endsOn) + ')</span>') +
+      (x.custNote ? '<span class="cn">Note: ' + esc(x.custNote) + '</span>' : '') + '</li>').join('') + '</ul>';
   } catch (e) { if (stillCurrent()) box.remove(); }
 }
 
@@ -612,10 +640,10 @@ $('regForm').onsubmit = async (e) => {
   if (!$('regName').value.trim()) return toast('Enter the customer name', true);
   if (!S.agent) return toast('Choose the agent from the list', true);
   if (!regPhones().length) return toast('Enter the customer phone number', true);
-  if (anyLocked('#tRegister') && S.user.role !== 'admin') return toast('A phone number is already claimed', true);
+  /* blocked numbers are submitted too, so the server can offer "Send to admin" / "Checked" */
   const btn = $('regBtn'); busy(btn, true, 'Saving…');
   try {
-    const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent.id });
+    const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent.id, note: $('regNote').value });
     if (r.ok) {
       res.innerHTML = '<div class="status ok" style="margin:0 0 18px"><span class="big">Registered ✓</span><dl class="kv">' +
         '<dt>Customer</dt><dd>' + esc(r.name) + ' · ' + esc(r.phone) + '</dd><dt>Category</dt><dd>' + esc(r.category) + '</dd>' +
@@ -623,46 +651,98 @@ $('regForm').onsubmit = async (e) => {
         '<dt>Supervisor</dt><dd>' + esc(r.supervisor || '—') + '</dd><dt>Date</dt><dd>' + esc(r.date) + '</dd>' +
         '<dt>Locked until</dt><dd>' + esc(r.lockedUntil) + '</dd></dl></div>';
       loadMine();
-      $('regName').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = '';
+      $('regName').value = ''; $('regNote').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = '';
       $('regExtraPhones').innerHTML = ''; syncRegAdd();
       $('regAgent').value = ''; S.agent = null; showSup(); $('regName').focus();
     } else {
       res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, r.lock.sameCategory ? 'Not registered — already registered by this agent in ' + esc(r.lock.category) : 'Not registered — number already claimed') +
-        (r.canOverride ? '<div class="why">Admin: if this is a different person, you can still register them.<br><button class="btn ghost small" type="button" id="ovBtn" style="margin-top:8px">Register anyway…</button></div>' : '') + '</div>';
-      if (r.canOverride) $('ovBtn').onclick = () => overrideRegister(r.lock);
+        (r.lock.sameCategory ? '' : r.canOverride
+          ? '<div class="why">Admin: compare both <b>full numbers</b>. If they are different people:<br><button class="btn ghost small" type="button" id="ovBtn" style="margin-top:8px">Checked ✓, different number, register…</button></div>'
+          : '<div class="why">If you think this is a different person, an administrator can compare both full numbers:<br><button class="btn ghost small" type="button" id="reqBtn" style="margin-top:8px">Send to admin to check</button></div>') + '</div>';
+      if ($('ovBtn')) $('ovBtn').onclick = () => overrideRegister(r.lock);
+      if ($('reqBtn')) $('reqBtn').onclick = sendToAdmin;
 
     }
   } catch (err) { res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + esc(err.message) + '</div>'; }
   busy(btn, false);
 };
-/* Admin: register even though the number is claimed (different person). The reason is saved in the Note column. */
+/* Admin: full numbers compared and different → register even though the first 8 digits match. Saved in the Note column. */
 function overrideRegister(lock) {
-  openModal('<h3>Register anyway?</h3>' +
-    '<p style="font-size:14px;margin:-6px 0 14px">This number is claimed by <b>' + esc(lock.via) + '</b> for <b>' + esc(lock.name) + '</b> until ' + esc(lock.lockedUntil) + '. ' +
-    'Only continue if you have confirmed it is a <b>different person</b>.</p>' +
-    '<label class="f"><span>Reason (saved in the sheet)</span><input type="text" id="ovReason" maxlength="150" placeholder="e.g. different person, confirmed with supervisor Kassa"></label>' +
-    '<div id="ovMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="ovSave" type="button">Register anyway</button></div>');
+  openModal('<h3>Checked: different number?</h3>' +
+    '<p style="font-size:14px;margin:-6px 0 14px">Blocked by <b>' + esc(lock.via) + '</b>: ' + esc(lock.name) + ', <b>' + esc(lock.phone) + '</b> (' + esc(lock.category) + ', ' + esc(lock.date) + ').<br>' +
+    'New: <b>' + esc($('regName').value) + '</b>, <b>' + esc(regPhones().join(' / ')) + '</b>.<br>Only continue if you compared both <b>full</b> numbers and they are different.</p>' +
+    '<label class="f"><span>Comment (optional, saved in the sheet)</span><input type="text" id="ovReason" maxlength="150" placeholder="e.g. 0911 11 10 45 vs 0911 11 10 78, checked with agent"></label>' +
+    '<div id="ovMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="ovSave" type="button">Checked ✓, register</button></div>');
   $('ovSave').onclick = async () => {
-    if ($('ovReason').value.trim().length < 5) return msgBox($('ovMsg'), 'bad', 'Write the reason.');
     busy($('ovSave'), true, 'Saving…');
     try {
-      const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent ? S.agent.id : '', override: { reason: $('ovReason').value } });
+      const r = await call('register', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent ? S.agent.id : '', note: $('regNote').value, override: { reason: $('ovReason').value } });
       closeModal();
       if (r.ok) {
-        $('regResult').innerHTML = '<div class="status ok" style="margin:0 0 18px"><span class="big">Registered (admin override) ✓</span>' + esc(r.name) + ' · ' + esc(r.phone) + ' · ' + esc(r.category) + ' · ' + esc(r.agent) + '</div>';
-        loadMine(); $('regName').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = ''; $('regExtraPhones').innerHTML = ''; syncRegAdd();
+        $('regResult').innerHTML = '<div class="status ok" style="margin:0 0 18px"><span class="big">Registered (checked by admin) ✓</span>' + esc(r.name) + ' · ' + esc(r.phone) + ' · ' + esc(r.category) + ' · ' + esc(r.agent) + '</div>';
+        loadMine(); $('regName').value = ''; $('regNote').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = ''; $('regExtraPhones').innerHTML = ''; syncRegAdd();
       }
     } catch (e) { msgBox($('ovMsg'), 'bad', esc(e.message)); busy($('ovSave'), false); }
   };
 }
 
+/* Data entry: ask an admin to compare the full numbers. */
+async function sendToAdmin() {
+  const btn = $('reqBtn'); busy(btn, true, 'Sending…');
+  try {
+    const r = await call('requestCheck', S.token, { category: S.cat, name: $('regName').value, phones: regPhones(), agentId: S.agent ? S.agent.id : '', note: $('regNote').value });
+    if (r.free) { toast('This number is free now — click Register again.'); busy(btn, false); return; }
+    $('regResult').innerHTML = '<div class="status info" style="margin:0 0 18px"><span class="big">Sent to admin ✓</span>' + (r.duplicate ? 'This request was already waiting.' : 'Request ' + esc(r.id) + ': an administrator will compare both full numbers. See the <b>Checks</b> tab for the answer.') + '</div>';
+    $('regName').value = ''; $('regNote').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = ''; $('regExtraPhones').innerHTML = ''; syncRegAdd();
+    loadChecks();
+  } catch (e) { toast(e.message, true); busy(btn, false); }
+}
+
+/* ---------- checks tab ---------- */
+S.checks = { pending: [], decided: [] };
+async function loadChecks() {
+  if (!S.user || ['admin', 'entry'].indexOf(S.user.role) < 0) return;
+  try { S.checks = await call('listChecks', S.token); } catch (e) { return; }
+  if (!S.user) return;
+  const isAdmin = S.user.role === 'admin', n = S.checks.pending.length;
+  const navBtn = document.querySelector('nav button[data-tab=tChecks]');
+  if (navBtn) navBtn.innerHTML = 'Checks' + (n ? '<span class="nav-badge">' + n + '</span>' : '');
+  $('chkHint').textContent = isAdmin
+    ? 'Numbers blocked because the first 8 digits match. Compare both full numbers, then approve or reject.'
+    : 'Your requests for an administrator to compare full numbers.';
+  $('chkPending').innerHTML = n ? S.checks.pending.map((c, i) => checkCard(c, i, isAdmin)).join('') : '<p class="muted">Nothing waiting.</p>';
+  $('chkDecided').innerHTML = S.checks.decided.length ? '<div class="tbl-wrap"><table><thead><tr><th>Request</th><th>Customer</th><th>Phones</th><th>Agent</th><th>Result</th><th>By</th></tr></thead><tbody>' +
+    S.checks.decided.map((c) => '<tr><td class="nowrap">' + esc(c.id) + '<br><small class="muted">' + esc(c.requestedAt) + '</small></td><td>' + esc(c.name) + '</td><td>' + esc(c.phones) + '</td><td>' + esc(c.agent) +
+      '</td><td><span class="tag ' + (c.status === 'Approved' ? 'free' : 'lock') + '">' + esc(c.status === 'Approved' ? 'Approved, registered' : 'Rejected') + '</span>' + (c.comment ? '<br><small>' + esc(c.comment) + '</small>' : '') +
+      '</td><td>' + esc(c.decidedBy) + '<br><small class="muted">' + esc(c.decidedAt) + '</small></td></tr>').join('') + '</tbody></table></div>' : '<p class="muted">None yet.</p>';
+}
+function checkCard(c, i, isAdmin) {
+  const bl = String(c.blockedBy || '').split(' · ');
+  return '<div class="chk-card"><div><b>' + esc(c.id) + '</b> · ' + esc(c.category) + ' · requested by ' + esc(c.requestedBy) + ' at ' + esc(c.requestedAt) + '</div>' +
+    '<div class="two"><div class="box">New registration<br><b>' + esc(c.name) + '</b><br><b class="big">' + esc(c.phones) + '</b><br>Agent: ' + esc(c.agent) + (c.note ? '<br><small>Note: ' + esc(c.note) + '</small>' : '') + '</div>' +
+    '<div class="box">Blocked by existing claim<br><b>' + esc(bl[1] || '') + '</b><br><b class="big">' + esc(bl[2] || '') + '</b><br>Agent: ' + esc(bl[0] || '') + '<br><small>' + esc(bl[3] || '') + '</small></div></div>' +
+    (isAdmin ? '<label class="f" style="margin-bottom:10px"><span>Comment (optional)</span><input type="text" id="cc' + i + '" maxlength="150" placeholder="e.g. full numbers 0911 11 10 45 / 0911 11 10 78"></label>' +
+      '<div class="row"><div class="shrink"><button class="btn primary small" type="button" onclick="decide(' + i + ',true)">Checked ✓, different number, register</button></div>' +
+      '<div class="shrink"><button class="btn ghost small" type="button" onclick="decide(' + i + ',false)">Same customer, reject</button></div></div>'
+      : '<span class="tag off">Waiting for admin</span>') + '</div>';
+}
+async function decide(i, approve) {
+  const c = S.checks.pending[i]; if (!c) return;
+  try {
+    const r = await call('decideCheck', S.token, c.id, approve, ($('cc' + i) || {}).value || '');
+    toast(approve ? 'Checked: ' + c.name + ' registered' : 'Rejected');
+    loadChecks(); if (S.recLoaded) loadRecords();
+  } catch (e) { toast(e.message, true); }
+}
+$('chkRefresh').onclick = loadChecks;
+
 /* ---------- my entries + edit ---------- */
 S.mine = [];
 async function loadMine() {
-  if (['admin', 'entry'].indexOf(S.user.role) < 0) return;
-  try { S.mine = await call('listMyEntries', S.token); } catch (e) { $('regRecentList').innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; return; }
+  if (!S.user || ['admin', 'entry'].indexOf(S.user.role) < 0) return;
+  try { S.mine = await call('listMyEntries', S.token); if (!S.user) return; } catch (e) { $('regRecentList').innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; return; }
   $('regRecentList').innerHTML = S.mine.length ? '<div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Customer</th><th>Phone</th><th>Category</th><th>Agent</th><th></th></tr></thead><tbody>' +
-    S.mine.map((x, i) => '<tr><td class="nowrap">' + esc((x.enteredAt || '').slice(-5)) + '</td><td>' + esc(x.name) + '</td><td>' + esc(x.phone).replace(/ \/ /g, '<br>') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.via) +
+    S.mine.map((x, i) => '<tr><td class="nowrap">' + esc((x.enteredAt || '').slice(-5)) + '</td><td>' + esc(x.name) + (x.custNote ? '<br><small class="muted">' + esc(x.custNote) + '</small>' : '') + '</td><td>' + esc(x.phone).replace(/ \/ /g, '<br>') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.via) +
       '</td><td><button class="btn ghost small" type="button" onclick="openEdit(S.mine[' + i + '])">Edit</button></td></tr>').join('') + '</tbody></table></div>'
     : '<p class="muted" style="margin:0">Nothing in the last 24 hours.</p>';
 }
@@ -678,6 +758,7 @@ function openEdit(rec) {
     '<label class="f"><span>Customer name</span><input type="text" id="eName" maxlength="80"></label>' +
     '<div class="f" style="margin-bottom:14px"><span style="display:block;font-size:13px;font-weight:600;margin-bottom:0;color:#33414d">Phone numbers</span><div id="ePhones"></div>' +
     '<button type="button" class="linkbtn" id="eAddPhone">+ Add another phone</button></div>' +
+    '<label class="f"><span>Note <small class="muted" style="font-weight:400">(optional)</small></span><textarea id="eNote" rows="2" maxlength="300"></textarea></label>' +
     '<div class="f"><span style="display:block;font-size:13px;font-weight:600;margin-bottom:5px;color:#33414d">Agent</span>' +
     '<div id="eAgentNow" style="display:flex;gap:10px;align-items:center"><span><b>' + esc(rec.via || '—') + '</b>' + (rec.type ? ' <small class="muted">(' + esc(rec.type) + ')</small>' : '') + '</span>' +
     '<button type="button" class="linkbtn" id="eChangeAgent">Change</button></div>' +
@@ -685,7 +766,7 @@ function openEdit(rec) {
     '<label class="f"><span>Agent name</span><div class="combo" id="eCombo"><input type="text" id="eAgent" placeholder="Choose type first" disabled><div class="list hidden"></div></div></label></div><div id="eSup" class="muted" style="font-size:14px;margin-top:-6px"></div></div></div>' +
     '<div id="eMsg"></div><div class="actions"><button class="btn ghost" type="button" onclick="closeModal()">Cancel</button><button class="btn primary" id="eSave" type="button">Save changes</button></div>');
   $('modalBox').classList.add('wide');
-  $('eName').value = rec.name;
+  $('eName').value = rec.name; $('eNote').value = rec.custNote || '';
   let eNameT; $('eName').addEventListener('input', () => { clearTimeout(eNameT); eNameT = setTimeout(() => recheckPhones('#ePhones'), 700); });
   $('eCat').querySelectorAll('button').forEach((b) => (b.onclick = () => { const ch = cat !== b.dataset.v; cat = b.dataset.v; $('eCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); if (ch) recheckPhones('#ePhones'); }));
   const phones = String(rec.phone || '').split(' / ').filter(Boolean);
@@ -711,7 +792,7 @@ function openEdit(rec) {
     busy($('eSave'), true, 'Saving…');
     try {
       const r = await call('editRecord', S.token, { catKey: rec.catKey, row: rec.row, expectName: rec.name, expectPhone: rec.phone,
-        category: cat, name: $('eName').value, phones: ph, agentId: agent ? agent.id : '' });
+        category: cat, name: $('eName').value, phones: ph, agentId: agent ? agent.id : '', note: $('eNote').value });
       if (!r.ok) { msgBox($('eMsg'), 'bad', lockHtml(r.lock, 'Not saved — a number is already claimed')); busy($('eSave'), false); return; }
       closeModal(); toast('Changes saved'); loadMine(); if (S.recLoaded) loadRecords();
     } catch (e) { msgBox($('eMsg'), 'bad', esc(e.message)); busy($('eSave'), false); }
@@ -755,8 +836,8 @@ async function loadRecords(btn) {
     $('recStats').innerHTML = Object.keys(r.stats.today).map((k) => '<div class="stat"><b>' + r.stats.today[k] + '</b><span>' + esc(k) + ' today · ' + r.stats.last30[k] + ' in 30 days</span></div>').join('');
     $('recCount').textContent = r.total ? (r.total > r.shown ? 'Showing newest ' + r.shown + ' of ' + r.total + ' records. Narrow the search to see more.' : r.total + ' record' + (r.total > 1 ? 's' : '')) : 'No records match.';
     S.recRows = r.rows;
-    $('recBody').innerHTML = r.rows.map((x, i) => '<tr><td class="nowrap">' + esc(x.date || '—') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + '</td><td class="nowrap">' + esc(x.phone) +
-      '</td><td>' + esc(x.via) + (x.type ? '<br><small class="muted">' + esc(x.type) + '</small>' : '') + (x.note ? '<br><small class="tag lock" title="' + esc(x.note) + '">admin override</small>' : '') + '</td><td>' + esc(x.supervisor) + '</td><td>' + esc(x.enteredBy) + '</td><td>' + statusTag(x) + '</td><td>' +
+    $('recBody').innerHTML = r.rows.map((x, i) => '<tr><td class="nowrap">' + esc(x.date || '—') + '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + (x.custNote ? '<br><small class="muted">' + esc(x.custNote) + '</small>' : '') + '</td><td class="nowrap">' + esc(x.phone) +
+      '</td><td>' + esc(x.via) + (x.type ? '<br><small class="muted">' + esc(x.type) + '</small>' : '') + (x.note ? '<br><small class="tag lock" title="' + esc(x.note) + '">checked by admin</small>' : '') + '</td><td>' + esc(x.supervisor) + '</td><td>' + esc(x.enteredBy) + '</td><td>' + statusTag(x) + '</td><td>' +
       (r.canEdit ? '<button class="btn ghost small" type="button" onclick="openEdit(S.recRows[' + i + '])">Edit</button>' : '') + '</td></tr>').join('');
   } catch (err) { $('recCount').textContent = err.message; }
   busy(btn, false);
