@@ -559,27 +559,34 @@ function bindPhone(input, el, skip, getWho, getCtx) {
               (S.user && S.user.role === 'admin' ? 'Compare both <b>full numbers</b>; if they are different, click <b>Checked</b> after submitting.' : 'Submit, then click <b>Send to admin</b>: an administrator will compare both full numbers.') + '</div>' : '';
           msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
         } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
-        showHistory(el, input.value, skip, () => my === seq, getCtx);
+        loadHistory(el, input.value, skip, () => my === seq, getCtx);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
     }, 450);
   });
 }
-/* ALL previous registrations of this number (whole sheet, every category), shown under the phone check. */
-async function showHistory(el, phone, skip, stillCurrent, getCtx) {
-  const ctx = getCtx ? getCtx() : {};
+/* ALL previous registrations of this number (whole sheet, every category), shown under the phone check.
+   Comes back in the same request as the check, so it appears together with the answer. */
+async function loadHistory(el, phone, skip, stillCurrent, getCtx) {
   const box = document.createElement('div');
-  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Looking up previous registrations…';
+  box.className = 'hist'; box.innerHTML = '<span class="spin"></span> Loading previous registrations…';
   el.appendChild(box);
   try {
     const h = await call('phoneHistory', S.token, phone, skip || null);
     if (!stillCurrent()) return;
-    if (!h.length) { box.innerHTML = 'No previous registrations of this number.'; return; }
-    box.innerHTML = '<b>Previous registrations (' + h.length + '):</b><ul>' + h.map((x) =>
+    box.remove(); renderHistory(el, h, getCtx);
+  } catch (e) { if (stillCurrent()) box.remove(); }
+}
+function renderHistory(el, h, getCtx) {
+  const ctx = getCtx ? getCtx() : {};
+  const box = document.createElement('div');
+  box.className = 'hist';
+  if (!h.length) box.innerHTML = 'No previous registrations of this number.';
+  else box.innerHTML = '<b>Previous registrations (' + h.length + '):</b><ul>' + h.map((x) =>
       '<li><span class="cat' + (x.catKey === ctx.category ? ' now' : '') + '">' + esc(x.category) + '</span>' + esc(x.date) + ' · <b>' + esc(x.name || '—') + '</b> ' + esc(x.phone) +
       ' · by <b>' + esc(x.via || '—') + '</b> ' +
       (x.active ? '<span class="tag lock">claimed until ' + esc(x.endsOn) + '</span>' : '<span class="muted">(ended ' + esc(x.endsOn) + ')</span>') +
       (x.custNote ? '<span class="cn">Note: ' + esc(x.custNote) + '</span>' : '') + '</li>').join('') + '</ul>';
-  } catch (e) { if (stillCurrent()) box.remove(); }
+  el.appendChild(box);
 }
 
 /* Adds an extra phone input (with remove button) to a container. */

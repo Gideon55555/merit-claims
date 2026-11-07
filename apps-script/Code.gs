@@ -98,7 +98,8 @@ function onOpen() {
     .createMenu('Claims System')
     .addItem('Run setup', 'setupFromMenu')
     .addItem('Reset admin password', 'resetAdminFromMenu')
-    .addItem('Refresh data now (after deleting/moving rows)', 'refreshFromMenu')
+    .addItem('Refresh data now', 'refreshFromMenu')
+    .addItem('Turn on change alarm (once)', 'installTriggersFromMenu')
     .addToUi();
 }
 
@@ -140,6 +141,7 @@ function setup() {
     createUser_('admin', 'Administrator', 'admin', 'ChangeMe123', true);
     msgs.push('Admin user created → username: admin  password: ChangeMe123 (must be changed at first login)');
   }
+  try { installTriggers(); msgs.push('Change alarm switched on'); } catch (e) { msgs.push('Change alarm: run installTriggers once (' + e.message + ')'); }
   clearCaches_();
   Logger.log(msgs.join('\n'));
   return msgs.join('\n');
@@ -147,6 +149,10 @@ function setup() {
 
 function setupFromMenu() {
   SpreadsheetApp.getUi().alert(setup());
+}
+
+function installTriggersFromMenu() {
+  SpreadsheetApp.getUi().alert(installTriggers());
 }
 
 function refreshFromMenu() {
@@ -507,6 +513,41 @@ function readClaims_(cat, today, ssTz) {
   return { rows: res.rows, lastDataRow: res.lastDataRow || L.headerRow, layout: L };
 }
 
+/**
+ * Reads a tab from the BOTTOM UP and stops only when it is clearly past last month:
+ *  - rows with no name and no phone (empty / pre-filled date rows) are ignored
+ *  - rows with no date, or a date that can be read two ways (05/11), are ignored for stopping
+ *  - dates more than 4 months before the cut-off (typos like a wrong year) are ignored for stopping
+ *  - it stops after 50 customer rows in a row dated before the same date last month
+ */
+const STOP_AFTER_OLD_ROWS = 50;
+
+function readClaimsRecent_(cat, today, ssTz) {
+  const sh = categorySheet_(cat, false);
+  if (!sh) throw new Error('Tab for "' + cat.label + '" not found. Tab names must contain "' + cat.label.split(' ')[0] + '".');
+  const L = layout_(sh, false);
+  const cutoff = today - 31, tooOld = cutoff - 120, CHUNK = 1000;
+  let end = sh.getLastRow(), vals = [], first = end + 1, oldStreak = 0, stop = false;
+  while (end > L.headerRow && !stop) {
+    const start = Math.max(L.headerRow + 1, end - CHUNK + 1);
+    const chunk = sh.getRange(start, 1, end - start + 1, L.width).getValues();
+    let cut = 0;                                              // keep everything below the stopping point
+    for (let i = chunk.length - 1; i >= 0; i--) {
+      const r = chunk[i];
+      const hasData = (L.name && String(r[L.name - 1]).trim()) || String(r[L.phone - 1]).trim();
+      if (!hasData) continue;
+      const stamp = L.enteredAt ? cellDayCands_(cellStr_(r[L.enteredAt - 1]), ssTz, today) : [];
+      const c = stamp.length ? stamp : cellDayCands_(r[L.date - 1], ssTz, today);
+      if (c.length !== 1) continue;                           // no date / ambiguous date
+      if (c[0] >= cutoff) { oldStreak = 0; continue; }        // recent
+      if (c[0] < tooOld) continue;                            // probably a typo
+      if (++oldStreak >= STOP_AFTER_OLD_ROWS) { stop = true; cut = i; break; }
+    }
+    vals = chunk.slice(cut).concat(vals); first = start + cut; end = start - 1;
+  }
+  return parseClaims_(cat, L, vals, first, today, ssTz).rows;
+}
+
 /** Reads EVERY row of all three tabs. Never returns silently empty: if a tab can't be read, it throws. */
 function readAllClaims_() {
   const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
@@ -523,26 +564,30 @@ function readAllClaims_() {
 
 /* Recent claims (last 31 days) kept in the script cache so checks don't have to open the sheet.
    Cleared when someone edits the sheet by hand (onEdit) and updated on every registration. */
-const IDX_TTL = 300;          // seconds
+const IDX_TTL = 21600;        // seconds (6 hours, Google's maximum) — cleared on every change to the sheet
 const IDX_FIELDS = ['day', 'keys', 'category', 'categoryLabel', 'row', 'name', 'phone', 'via', 'type', 'supervisor', 'enteredBy', 'enteredAt', 'note', 'custNote'];
 
 /**
- * Claims of the last 31 days, taken from a read of the WHOLE sheet (every row of every tab),
- * so a claim is found wherever it is in the sheet. Kept in memory for 5 minutes.
+ * Claims of the last 31 days (bottom-up read, see readClaimsRecent_). Kept in memory for up to 6 hours;
+ * cleared by the change alarm and checked against the tabs' size about once a minute.
  */
 function recentClaims_() {
   const today = todayDay_();
   const cached = idxGet_(today);
   if (cached) return { rows: cached, today: today };
-  return { rows: buildIndexes_().recent, today: today };
+  const ssTz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  let rows = [];
+  CATEGORIES.forEach(function (cat) {
+    rows = rows.concat(readClaimsRecent_(cat, today, ssTz).filter(function (r) { return r.day !== null && today - r.day <= 31; }));
+  });
+  idxPut_(rows, today);
+  return { rows: rows, today: today };
 }
 
-/** One full read of the sheet → recent-claims cache + all-time history cache. */
+/** Full read of the whole sheet → all-time history (only used for the history list, which loads separately). */
 function buildIndexes_() {
-  const all = readAllClaims_(), today = all.today;
-  const recent = all.rows.filter(function (r) { return r.day !== null && today - r.day <= 31; });
-  idxPut_(recent, today);
-  return { recent: recent, hist: histPut_(all.rows), today: today };
+  const all = readAllClaims_();
+  return { hist: histPut_(all.rows), today: all.today };
 }
 
 function idxGet_(today) {
@@ -551,6 +596,10 @@ function idxGet_(today) {
   if (!meta) return null;
   const m = JSON.parse(meta);
   if (m.today !== today) return null;
+  if (!c.get('fp:ok')) {                                   // about once a minute: quick look at each tab's size
+    if (m.fp !== sheetFingerprint_()) { c.removeAll(['idx:meta', 'hist:meta']); return null; }
+    c.put('fp:ok', '1', 60);
+  }
   const keys = [];
   for (let i = 0; i < m.n; i++) keys.push('idx:' + m.ver + ':' + i);
   const parts = c.getAll(keys);
@@ -567,10 +616,41 @@ function idxPut_(rows, today) {
   for (let i = 0; i < str.length; i += SIZE) obj['idx:' + ver + ':' + (n++)] = str.slice(i, i + SIZE);
   if (n > 150) return;                                                    // unusually large: just don't cache
   c.putAll(obj, IDX_TTL + 60);
-  c.put('idx:meta', JSON.stringify({ ver: ver, n: n, today: today }), IDX_TTL);
+  c.put('idx:meta', JSON.stringify({ ver: ver, n: n, today: today, fp: sheetFingerprint_() }), IDX_TTL);
+  c.put('fp:ok', '1', 60);
 }
 
-function clearCaches_() { CacheService.getScriptCache().removeAll(['idx:meta', 'hist:meta', 'users', 'agents']); }
+/** Tiny summary of the three tabs (number of rows) — changes when rows are added, deleted or inserted by hand. */
+function sheetFingerprint_() {
+  return CATEGORIES.map(function (cat) {
+    const sh = categorySheet_(cat, false);
+    return sh ? sh.getLastRow() + ':' + sh.getMaxRows() : '-';
+  }).join('|');
+}
+
+/**
+ * Change alarm: runs on ANY change to the spreadsheet (typing, pasting, deleting/inserting/moving rows, sorting)
+ * and clears the memory so the next check reads the fresh sheet. Switched on once by installTriggers().
+ */
+function onSheetChange(e) {
+  try { clearCaches_(); } catch (x) { /* never block a change */ }
+}
+
+/** Run ONCE from the Apps Script editor (select installTriggers → Run → Allow). Safe to run again. */
+function installTriggers() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'onSheetChange') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onSheetChange').forSpreadsheet(ss).onChange().create();
+  ScriptApp.newTrigger('onSheetChange').forSpreadsheet(ss).onEdit().create();
+  clearCaches_();
+  const msg = 'Change alarm is ON: any change to the sheet now refreshes the system automatically.';
+  Logger.log(msg);
+  return msg;
+}
+
+function clearCaches_() { CacheService.getScriptCache().removeAll(['idx:meta', 'hist:meta', 'users', 'agents', 'fp:ok']); }
 
 /** Simple trigger: someone edited the sheet by hand → drop cached data so the next check re-reads it. */
 function onEdit(e) {
@@ -585,7 +665,7 @@ function onEdit(e) {
 
 /* All-time history per phone number (last few claims each), kept in cache for 6 hours.
    Recent claims always come from recentClaims_(), so new registrations show up immediately. */
-const HIST_TTL = 1800;
+const HIST_TTL = 21600;
 const HIST_KEEP = 40;
 
 function historyIndex_() {
@@ -626,6 +706,10 @@ function phoneHistory(token, phone, skip) {
   auth_(token);
   const p = parseNewPhone_(phone);
   if (!p.valid) return [];
+  return phoneHistoryCore_(p, skip);
+}
+
+function phoneHistoryCore_(p, skip) {
   const item = { key: p.key, digits: p.digits, intl: p.intl };
   const idx = historyIndex_(), recent = recentClaims_(), today = recent.today;
   const found = {}, add = function (day, catKey, via, row, name, ph, custNote) {
@@ -1016,11 +1100,8 @@ function checkPhone(token, phone, withHistory, skip, who) {
     out.lock.sameCategory = !!blocking && !!agentName && sameAgent_(blocking, agentName);   // owner, same category again
   }
 
-  if (withHistory) {
-    const all = readAllClaims_();
-    out.history = all.rows.filter(function (r) { return hasKey_(r.keys, p.key); })
-      .sort(function (a, b) { return (b.day || 0) - (a.day || 0); })
-      .slice(0, 15).map(function (r) { return claimView_(r, all.today); });
+  if (withHistory) {                                          // same request: no second trip to Google
+    out.history = phoneHistoryCore_(p, skip).map(function (h) { if (h.active) h.lockedUntil = h.endsOn; return h; });
   }
   return out;
 }
@@ -1160,8 +1241,7 @@ function registerCore_(u, data, check) {
     });
     recent.rows.push({ day: today, keys: ph.keys, category: cat.key, categoryLabel: cat.label, row: r, name: name, phone: ph.formatted,
       via: a.via, type: a.agent.type, supervisor: a.supervisor, enteredBy: enteredBy, enteredAt: enteredAt, note: note, custNote: custNote });
-    idxPut_(recent.rows, today);
-    CacheService.getScriptCache().remove('hist:meta');
+    idxPut_(recent.rows, today);       // history needs no refresh: the last 31 days always come from this fresh list
     return {
       ok: true, category: cat.label, catKey: cat.key, row: r, name: name, phone: ph.formatted, agent: a.agent.name, agentType: a.agent.type,
       supervisor: a.supervisor, date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS), enteredAt: enteredAt, override: !!note,
