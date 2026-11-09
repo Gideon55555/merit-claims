@@ -10,7 +10,7 @@
  *  - Roles: admin (everything), entry (register + check), viewer (records + check).
  */
 
-const CODE_VERSION = '2026-11-07 v5';
+const CODE_VERSION = '2026-11-09 v6';
 
 const CFG = {
   TZ: 'Africa/Addis_Ababa',   // "today" is calculated in this time zone
@@ -86,13 +86,14 @@ function publicCheck(phone) {
   const p = parseNewPhone_(phone);
   if (!p.valid) return { valid: false, error: p.error };
   const all = recentClaims_();
-  const hit = findLock_({ key: p.key, digits: p.digits, intl: p.intl }, all.rows, all.today);
-  if (!hit) return { valid: true, formatted: p.formatted, claimed: false };
-  return {
-    valid: true, formatted: p.formatted, claimed: true, category: hit.categoryLabel,
-    date: dayStr_(hit.day), lockedUntil: dayStr_(hit.day + CFG.LOCK_DAYS), freeFrom: dayStr_(hit.day + CFG.LOCK_DAYS + 1),
-    agent: PUBLIC_CHECK.showAgent ? hit.via : '',
-  };
+  const locks = findLocks_({ key: p.key, digits: p.digits, intl: p.intl }, all.rows, all.today);
+  const byCat = CATEGORIES.map(function (c) {
+    const hit = locks.filter(function (r) { return r.category === c.key; })[0];
+    return hit ? { category: c.label, claimed: true, agent: PUBLIC_CHECK.showAgent ? hit.via : '', date: dayStr_(hit.day),
+      lockedUntil: dayStr_(hit.day + CFG.LOCK_DAYS), freeFrom: dayStr_(hit.day + CFG.LOCK_DAYS + 1) } : { category: c.label, claimed: false };
+  });
+  const first = byCat.filter(function (x) { return x.claimed; })[0];
+  return Object.assign({ valid: true, formatted: p.formatted, claimed: !!first, categories: byCat }, first || {});
 }
 
 function onOpen() {
@@ -940,6 +941,12 @@ function resolveDays_(cands) {
   const days = cands.map(function (c, i) {
     if (c.length < 2) return c.length ? c[0] : null;
     while (p < clear.length && clear[p] < i) p++;
+    // rows are in date order: take the earliest reading that is not before the dated row above
+    if (p > 0) {
+      const prev = cands[clear[p - 1]][0];
+      const ok = c.filter(function (x) { return x >= prev; }).sort(function (a, b) { return a - b; });
+      if (ok.length) return ok[0];
+    }
     const near = clear.slice(Math.max(0, p - 8), p).concat(clear.slice(p, p + 8)).map(function (j) { return cands[j][0]; });
     if (!near.length) return c[0];
     near.sort(function (a, b) { return a - b; });
@@ -1145,14 +1152,17 @@ function checkPhone(token, phone, withHistory, skip, who) {
   const item = { key: p.key, digits: p.digits, intl: p.intl };
   const sk = skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null;
   const agentName = who ? (who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '')) : '';
-  const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName, who && who.category ? String(who.category) : '');
-  const lockRow = blocking || findLocks_(item, recent.rows, recent.today, sk, custName)[0] || null;
-  const out = { valid: true, formatted: p.formatted, key: p.key, lock: lockRow ? claimView_(lockRow, recent.today) : null };
-  if (lockRow) {
-    out.lock.match = matchReason_(lockRow, item, custName);     // 'number' | 'hidden' | 'name'
-    out.lock.sameAgent = !blocking;
-    out.lock.sameCategory = !!blocking && !!agentName && sameAgent_(blocking, agentName);   // owner, same category again
+  const category = who && who.category ? String(who.category) : '';
+  const out = { valid: true, formatted: p.formatted, key: p.key, lock: null, category: category };
+  if (category) {
+    const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName, category);
+    if (blocking) {
+      out.lock = claimView_(blocking, recent.today);
+      out.lock.match = matchReason_(blocking, item, custName);   // 'number' | 'hidden' | 'name'
+      out.lock.sameCategory = !!agentName && sameAgent_(blocking, agentName);   // same agent, same category again
+    }
   }
+  out.others = otherClaims_([item], recent.rows, recent.today, sk, custName, category);   // other categories: information only
 
   if (withHistory) {                                          // same request: no second trip to Google
     out.history = phoneHistoryCore_(p, skip).map(function (h) { if (h.active) h.lockedUntil = h.endsOn; return h; });
@@ -1186,20 +1196,35 @@ function agentFields_(agentId) {
  * First claim that blocks these numbers. A claim by the SAME agent does not block:
  * the agent who owns the customer may register them again (e.g. Expecting → Office Visit → Site Visit).
  */
+/**
+ * The claim that blocks registering these numbers in `category`.
+ * RULE: only the category being registered is checked. Within that category the number is blocked for 30 days
+ * (other agents AND the same agent). Claims in the other categories never block — they are shown as information.
+ */
 function firstLock_(items, rows, today, skip, agentName, custName, category) {
   for (let i = 0; i < items.length; i++) {
-    const all = findLocks_(items[i], rows, today, skip, custName);
-    // the owner may move the customer to ANOTHER category, but not register them again in the same one
-    const again = category ? all.filter(function (r) { return r.category === category && sameAgent_(r, agentName); })[0] : null;
-    if (again) return again;
-    let hits = all.filter(function (r) { return !sameAgent_(r, agentName); });
-    // an admin already approved this agent's customer as a different person → other claims only block if the name matches
-    if (hits.length && agentName && custName && all.some(function (r) { return sameAgent_(r, agentName) && isOverride_(r) && sameCustomerName_(r.name, custName); })) {
-      hits = hits.filter(function (r) { return sameCustomerName_(r.name, custName); });
+    const everywhere = findLocks_(items[i], rows, today, skip, custName);
+    let hits = category ? everywhere.filter(function (r) { return r.category === category; }) : everywhere;
+    // an admin already checked this agent's customer as a different person → other claims only block if the name matches
+    if (hits.length && agentName && custName && everywhere.some(function (r) { return sameAgent_(r, agentName) && isOverride_(r) && sameCustomerName_(r.name, custName); })) {
+      hits = hits.filter(function (r) { return sameAgent_(r, agentName) || sameCustomerName_(r.name, custName); });
     }
     if (hits.length) return hits[0];
   }
   return null;
+}
+
+/** Claims of these numbers within 30 days in the OTHER categories (information only), newest per category. */
+function otherClaims_(items, rows, today, skip, custName, category) {
+  const seen = {}, out = [];
+  items.forEach(function (it) {
+    findLocks_(it, rows, today, skip, custName).forEach(function (r) {
+      if (r.category === category || seen[r.category]) return;
+      seen[r.category] = true;
+      out.push(claimView_(r, today));
+    });
+  });
+  return out;
 }
 
 /** Name used for matching agents: lower case, letters/digits only, "(supervisor)" removed. */
@@ -1273,11 +1298,12 @@ function registerCore_(u, data, check) {
     const recent = recentClaims_();
     const today = recent.today;
     let note = '';
+    const others = otherClaims_(ph.items, recent.rows, today, null, name, cat.key);
     const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name, cat.key);
     if (hit) {
       if (!check) {
         const lv = claimView_(hit, today); lv.sameCategory = sameAgent_(hit, a.agent.name);
-        return { ok: false, lock: lv, canOverride: u.role === 'admin', canRequest: true };
+        return { ok: false, lock: lv, canOverride: u.role === 'admin', canRequest: true, others: otherClaims_(ph.items, recent.rows, today, null, name, cat.key) };
       }
       const reason = String(check.reason || '').trim() || 'full numbers checked, different';
       note = 'CHECKED by ' + (u.name || u.username) + ': ' + reason + ' (blocked by ' + hit.via + ', ' + hit.name + ', ' + hit.phone + ', ' + hit.categoryLabel + ' ' + dayStr_(hit.day) + ')';
@@ -1299,6 +1325,7 @@ function registerCore_(u, data, check) {
     return {
       ok: true, category: cat.label, catKey: cat.key, row: r, name: name, phone: ph.formatted, agent: a.agent.name, agentType: a.agent.type,
       supervisor: a.supervisor, date: dayStr_(today), lockedUntil: dayStr_(today + CFG.LOCK_DAYS), enteredAt: enteredAt, override: !!note,
+      others: others,
     };
   } finally {
     lock.releaseLock();
@@ -1470,8 +1497,7 @@ function editRecord(token, data) {
     const recent = recentClaims_();
     const today = recent.today;
     if (!unchanged || data.agentId || toCat.key !== fromCat.key) {
-      const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name,
-        toCat.key !== fromCat.key ? toCat.key : '');
+      const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name, toCat.key);
       if (hit) return { ok: false, lock: claimView_(hit, today) };
     }
     const custNote = data.note === undefined ? rec.custNote : cleanNote_(data.note);

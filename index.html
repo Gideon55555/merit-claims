@@ -217,7 +217,7 @@
       <div class="grid2">
         <div class="card">
           <h2>Register a customer</h2>
-          <p class="hint">Once registered, a number belongs to that agent for 30 days, across all three categories. Only the same agent can register the customer again (e.g. Expecting → Office Visit).</p>
+          <p class="hint">A number is checked only in the category you choose: it can't be registered again in that category for 30 days. Registrations in the other categories are shown for information.</p>
           <form id="regForm" autocomplete="off">
             <label class="f"><span>Category</span>
               <div class="seg" id="regCat">
@@ -571,22 +571,33 @@ function bindPhone(input, el, skip, getWho, getCtx) {
         const r = await call('checkPhone', S.token, input.value, false, skip || null, who);
         if (my !== seq || !S.user) return;
         if (!r.valid) { input.dataset.state = 'invalid'; return msgBox(el, 'warn', esc(r.error)); }
-        if (r.lock && r.lock.sameAgent) {
-          input.dataset.state = 'free';
-          msgBox(el, 'ok', '<b>Same agent ✓</b> ' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) + '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + '. They can register this customer again.');
-        } else if (r.lock && r.lock.sameCategory) {
+        const catName = r.category ? CATS[r.category] : '';
+        if (r.lock && r.lock.sameCategory) {
           input.dataset.state = 'locked';
           msgBox(el, 'bad', '<span class="big">Already registered in ' + esc(r.lock.category) + '</span>' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) +
-            '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + ' (' + esc(r.lock.name) + '). It can\'t be registered in ' + esc(r.lock.category) + ' again until ' + esc(r.lock.freeFrom) +
-            '. The same agent can move this customer to another category.');
+            '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + ' (' + esc(r.lock.name) + '). It can\'t be registered in ' + esc(r.lock.category) + ' again until ' + esc(r.lock.freeFrom) + '.');
         } else if (r.lock) {
           input.dataset.state = 'locked';
-          const hasAgent = who && (who.agentId || who.agentName);
           const why = r.lock.match === 'hidden' || r.lock.match === 'name'
             ? '<div class="why">The first 8 digits are the same and the last digits are hidden, so it is blocked whatever name is typed. ' +
               (S.user && S.user.role === 'admin' ? 'Compare both <b>full numbers</b>; if they are different, click <b>Checked</b> after submitting.' : 'Submit, then click <b>Send to admin</b>: an administrator will compare both full numbers.') + '</div>' : '';
-          msgBox(el, 'bad', lockHtml(r.lock) + why + '<div style="margin-top:8px;font-size:13px">Only <b>' + esc(r.lock.via) + '</b> can register this customer until ' + esc(r.lock.lockedUntil) + '.' + (hasAgent ? '' : ' If it is them, choose them as the agent below.') + '</div>');
-        } else { input.dataset.state = 'free'; msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register.'); }
+          msgBox(el, 'bad', lockHtml(r.lock, 'Already claimed in ' + esc(r.lock.category)) + why);
+        } else if (!r.category) {
+          input.dataset.state = 'free';
+          msgBox(el, 'info', 'Choose a <b>category</b> above: the number is checked only in the category you register it in.');
+        } else {
+          input.dataset.state = 'free';
+          msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register in <b>' + esc(catName) + '</b>.');
+        }
+        if (r.others && r.others.length) {
+          const box = document.createElement('div');
+          box.className = 'status warn'; box.style.marginTop = '6px';
+          box.innerHTML = '<b>Also registered in ' + (r.category ? 'other categories' : 'these categories') + ' (last 30 days):</b><ul style="margin:4px 0 0;padding-left:18px">' +
+            r.others.map((o) => '<li><b>' + esc(o.category) + '</b> on ' + esc(o.date) + ' by <b>' + esc(o.via || '—') + '</b>, ' + esc(o.name || '—') + ' ' + esc(o.phone) +
+              ' <span class="muted">(until ' + esc(o.lockedUntil) + ')</span></li>').join('') + '</ul>' +
+            (r.category ? '<div style="font-size:12.5px;margin-top:4px">This does not block registering in ' + esc(catName) + '.</div>' : '');
+          el.appendChild(box);
+        }
         loadHistory(el, input.value, skip, () => my === seq, getCtx);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
     }, 450);
@@ -663,8 +674,8 @@ $('regForm').onsubmit = async (e) => {
       $('regExtraPhones').innerHTML = ''; syncRegAdd();
       $('regAgent').value = ''; S.agent = null; showSup(); $('regName').focus();
     } else {
-      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, r.lock.sameCategory ? 'Not registered — already registered by this agent in ' + esc(r.lock.category) : 'Not registered — number already claimed') +
-        (r.lock.sameCategory ? '' : r.canOverride
+      res.innerHTML = '<div class="status bad" style="margin:0 0 18px">' + lockHtml(r.lock, 'Not registered — already registered in ' + esc(r.lock.category)) +
+        (r.canOverride
           ? '<div class="why">Admin: compare both <b>full numbers</b>. If they are different people:<br><button class="btn ghost small" type="button" id="ovBtn" style="margin-top:8px">Checked ✓, different number, register…</button></div>'
           : '<div class="why">If you think this is a different person, an administrator can compare both full numbers:<br><button class="btn ghost small" type="button" id="reqBtn" style="margin-top:8px">Send to admin to check</button></div>') + '</div>';
       if ($('ovBtn')) $('ovBtn').onclick = () => overrideRegister(r.lock);

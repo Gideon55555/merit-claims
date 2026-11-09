@@ -38,7 +38,7 @@
     <button id="b" type="submit">Check number</button>
     <div id="out"></div>
   </form>
-  <p class="note">A number stays claimed for 30 days after it is registered.<br>Enter at least the first 8 digits. Foreign numbers: start with + and the country code.</p>
+  <p class="note">Each category is checked separately: a number stays claimed in a category for 30 days.<br>Enter at least the first 8 digits. Foreign numbers: start with + and the country code.</p>
 </div>
 <script>
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -51,16 +51,15 @@ document.getElementById('f').onsubmit = (e) => {
     .withSuccessHandler((r) => {
       done();
       if (!r.valid) { out.innerHTML = '<div class="res warn">' + esc(r.error) + '</div>'; return; }
+      const cats = r.categories || [];
       if (!r.claimed) {
-        out.innerHTML = '<div class="res free"><span class="big">✓ Free</span><b>' + esc(r.formatted) + '</b> is not claimed. It can be registered.</div>';
+        out.innerHTML = '<div class="res free"><span class="big">✓ Free</span><b>' + esc(r.formatted) + '</b> is not registered in any category in the last 30 days.</div>';
         return;
       }
-      out.innerHTML = '<div class="res claimed"><span class="big">✗ Already claimed</span><dl>' +
-        '<dt>Number</dt><dd>' + esc(r.formatted) + '</dd>' +
-        (r.agent ? '<dt>Claimed by</dt><dd>' + esc(r.agent) + '</dd>' : '') +
-        '<dt>Category</dt><dd>' + esc(r.category) + '</dd>' +
-        '<dt>Registered</dt><dd>' + esc(r.date) + '</dd>' +
-        '<dt>Free from</dt><dd>' + esc(r.freeFrom) + '</dd></dl></div>';
+      out.innerHTML = '<div class="res claimed"><span class="big">' + esc(r.formatted) + '</span><dl>' +
+        cats.map((c) => '<dt>' + esc(c.category) + '</dt><dd>' + (c.claimed
+          ? '✗ Claimed' + (c.agent ? ' by ' + esc(c.agent) : '') + ' on ' + esc(c.date) + '<br><span style="font-weight:400">free from ' + esc(c.freeFrom) + '</span>'
+          : '<span style="color:#1d7a46">✓ Free</span>') + '</dd>').join('') + '</dl></div>';
     })
     .withFailureHandler((err) => { done(); out.innerHTML = '<div class="res warn">' + esc((err && err.message) || err) + '</div>'; })
     .publicCheck(ph.value);
