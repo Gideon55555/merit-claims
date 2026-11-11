@@ -10,7 +10,7 @@
  *  - Roles: admin (everything), entry (register + check), viewer (records + check).
  */
 
-const CODE_VERSION = '2026-11-09 v6';
+const CODE_VERSION = '2026-11-11 v7';
 
 const CFG = {
   TZ: 'Africa/Addis_Ababa',   // "today" is calculated in this time zone
@@ -23,16 +23,18 @@ const CFG = {
   MAX_RECORDS: 500,
   EDIT_HOURS: 24,             // data entry can edit their own entries for this long (admins: any time)
   MAX_PHONES: 3,              // phone numbers per customer
+  BLOCK_DUPLICATES: false,    // false = a claimed number can still be registered (the Claim checker sees duplicates)
 };
 
 const CATEGORIES = [
   { key: 'expecting', label: 'Expecting', match: /expect/i },
   { key: 'office', label: 'Office Visit', match: /office/i },
   { key: 'site', label: 'Site Visit', match: /site/i },
+  { key: 'walkin', label: 'Walk In', match: /walk/i, autoCreate: true },   // people who come to the office by themselves
 ];
 
 const AGENT_TYPES = ['Sales', 'Elite Sales', 'Supervisor', 'Freelancer', 'Agent'];
-const ROLES = ['admin', 'entry', 'viewer'];
+const ROLES = ['admin', 'entry', 'viewer', 'checker'];   // checker = Claim checker (sees duplicate numbers)
 const EXTRA_HEADERS = ['Agent Type', 'Supervisor', 'Entered By', 'Entered At', 'Edited', 'Note', 'Customer Note'];
 const AGENT_HEADERS = ['ID', 'Type', 'Name', 'Supervisor', 'Phone', 'Active'];
 const USER_HEADERS = ['Username', 'Full Name', 'Role', 'Active', 'Salt', 'Hash', 'Must Change Password', 'Created', 'Last Login'];
@@ -61,7 +63,7 @@ function doPost(e) {
     getAgents: getAgents, checkPhone: checkPhone, register: register, listRecords: listRecords,
     listUsers: listUsers, saveUser: saveUser, resetUserPassword: resetUserPassword, saveAgent: saveAgent, addAgentQuick: addAgentQuick,
     publicCheck: publicCheck, editRecord: editRecord, listMyEntries: listMyEntries, phoneHistory: phoneHistory,
-    requestCheck: requestCheck, listChecks: listChecks, decideCheck: decideCheck,
+    requestCheck: requestCheck, listChecks: listChecks, decideCheck: decideCheck, listDuplicates: listDuplicates,
   };
   let out;
   try {
@@ -248,7 +250,8 @@ function changePassword(token, oldPw, newPw) {
   if (hash_(String(oldPw || ''), u.salt) !== u.hash) throw new Error('Current password is wrong.');
   checkPasswordStrength_(newPw);
   setPassword_(u, newPw, false);
-  return publicUser_(findUser_(u.username));
+  const pu = publicUser_(findUser_(u.username)); pu.version = CODE_VERSION;
+  return pu;
 }
 
 /** Returns the user for a valid session, or throws. roles = allowed roles (null = any). */
@@ -479,6 +482,8 @@ function categorySheet_(cat, create) {
   if (!create) return null;
   const ns = ss.insertSheet(cat.label);
   ns.getRange(1, 1, 1, 5).setValues([['S/N', 'Date', 'Customer Name', 'Phone No', 'Via']]).setFontWeight('bold');
+  ns.getRange(2, 1, 1000, 4).setNumberFormat('@');            // phone and date typed by hand stay as text (no auto-dates)
+  ns.getRange(2, 2, 1000, 1).setNumberFormat('dd/mm/yyyy');
   ns.setFrozenRows(1);
   return ns;
 }
@@ -578,6 +583,7 @@ const STOP_AFTER_OLD_ROWS = 50;
 
 function readClaimsRecent_(cat, today, ssTz) {
   const sh = categorySheet_(cat, false);
+  if (!sh && cat.autoCreate) return [];
   if (!sh) throw new Error('Tab for "' + cat.label + '" not found. Tab names must contain "' + cat.label.split(' ')[0] + '".');
   const L = layout_(sh, false);
   const cutoff = today - 31, tooOld = cutoff - 120, CHUNK = 1000;
@@ -610,6 +616,7 @@ function readAllClaims_() {
   let rows = [];
   CATEGORIES.forEach(function (cat) {
     const sh = categorySheet_(cat, false);
+    if (!sh && cat.autoCreate) return;
     if (!sh) throw new Error('Tab for "' + cat.label + '" not found. Tab names must contain "' + cat.label.split(' ')[0] + '".');
     rows = rows.concat(readClaims_(cat, today, ssTz).rows);
   });
@@ -1153,7 +1160,7 @@ function checkPhone(token, phone, withHistory, skip, who) {
   const sk = skip && skip.catKey ? { category: skip.catKey, row: Number(skip.row) } : null;
   const agentName = who ? (who.agentId ? agentNameById_(who.agentId) : String(who.agentName || '')) : '';
   const category = who && who.category ? String(who.category) : '';
-  const out = { valid: true, formatted: p.formatted, key: p.key, lock: null, category: category };
+  const out = { valid: true, formatted: p.formatted, key: p.key, lock: null, category: category, blocking: CFG.BLOCK_DUPLICATES };
   if (category) {
     const blocking = firstLock_([item], recent.rows, recent.today, sk, agentName, custName, category);
     if (blocking) {
@@ -1300,7 +1307,7 @@ function registerCore_(u, data, check) {
     let note = '';
     const others = otherClaims_(ph.items, recent.rows, today, null, name, cat.key);
     const hit = firstLock_(ph.items, recent.rows, today, null, a.agent.name, name, cat.key);
-    if (hit) {
+    if (hit && (CFG.BLOCK_DUPLICATES || check)) {
       if (!check) {
         const lv = claimView_(hit, today); lv.sameCategory = sameAgent_(hit, a.agent.name);
         return { ok: false, lock: lv, canOverride: u.role === 'admin', canRequest: true, others: otherClaims_(ph.items, recent.rows, today, null, name, cat.key) };
@@ -1496,7 +1503,7 @@ function editRecord(token, data) {
 
     const recent = recentClaims_();
     const today = recent.today;
-    if (!unchanged || data.agentId || toCat.key !== fromCat.key) {
+    if (CFG.BLOCK_DUPLICATES && (!unchanged || data.agentId || toCat.key !== fromCat.key)) {
       const hit = firstLock_(items, recent.rows, today, { category: fromCat.key, row: row }, via.replace(/\(.*?\)/g, '').trim(), name, toCat.key);
       if (hit) return { ok: false, lock: claimView_(hit, today) };
     }
@@ -1524,10 +1531,74 @@ function editRecord(token, data) {
   }
 }
 
+/* ───────────────────────── Claim checker: duplicate numbers ───────────────────────── */
+
+/** Number of different agents, treating hand-typed variants as one ("betlham alemu (tinsu)" = "betlham(alemu)"). */
+function countAgents_(rows) {
+  const reps = [];
+  const plain = function (via) { return String(via || '').replace(/\([^)]*\)/g, ' ').trim(); };
+  rows.forEach(function (r) {
+    const same = reps.some(function (p) { return sameAgent_(r, plain(p.via)) || sameAgent_(p, plain(r.via)) || sameAgent_(r, String(p.via || '')) || sameAgent_(p, String(r.via || '')); });
+    if (!same) reps.push(r);
+  });
+  return reps.length;
+}
+
+/**
+ * Every phone number registered more than once, with who registered it, when, and who was first.
+ * f.days: period (0 = whole sheet) · f.differentAgents: only numbers held by 2+ different agents · f.q: search.
+ * Numbers match the same way as everywhere else (any format; first 8 digits when digits are hidden;
+ * two FULL numbers that differ in the last digits are different numbers).
+ */
+function listDuplicates(token, f) {
+  auth_(token, ['admin', 'checker']);
+  f = f || {};
+  const days = Number(f.days || 0);
+  const src = days > 0 && days <= 31 ? recentClaims_() : readAllClaims_();
+  const today = src.today;
+  const rows = src.rows.filter(function (r) { return r.day !== null && (!days || today - r.day < days); });
+  const byKey = {};
+  rows.forEach(function (r) { r.keys.forEach(function (k) { (byKey[k] = byKey[k] || []).push(r); }); });
+  const groups = [];
+  Object.keys(byKey).forEach(function (k) {
+    const list = byKey[k];
+    if (list.length < 2) return;
+    const clusters = [];                                     // split full numbers that differ in the last digits
+    list.forEach(function (r) {
+      const n = rowNumbers_(r.phone).filter(function (x) { return x.key === k; })[0] || { key: k, digits: k, intl: k.charAt(0) === '+' };
+      const c = clusters.filter(function (cl) { return cl.nums.every(function (m) { return compareNumbers_(m, n) !== 'different'; }); })[0];
+      if (c) { c.rows.push(r); c.nums.push(n); } else clusters.push({ rows: [r], nums: [n] });
+    });
+    clusters.forEach(function (cl) {
+      const uniq = {}; cl.rows = cl.rows.filter(function (r) { const id = r.category + ':' + r.row; if (uniq[id]) return false; uniq[id] = 1; return true; });
+      if (cl.rows.length < 2) return;
+      const nAgents = countAgents_(cl.rows);
+      if (f.differentAgents && nAgents < 2) return;
+      cl.rows.sort(function (a, b) { return a.day - b.day || stampMs_(a.enteredAt) - stampMs_(b.enteredAt) || a.row - b.row; });
+      const shown = cl.nums.filter(function (m) { return m.intl || m.digits.length >= 10; })[0] || cl.nums[0];
+      groups.push({
+        number: shown.intl ? '+' + shown.digits : fmtPhone_(shown.digits), key: k, count: cl.rows.length, agents: nAgents,
+        latest: cl.rows[cl.rows.length - 1].day,
+        rows: cl.rows.map(function (r, i) {
+          return { first: i === 0, date: dayStr_(r.day), time: r.enteredAt ? r.enteredAt.slice(-5) : '', category: r.categoryLabel, catKey: r.category,
+            row: r.row, name: r.name, phone: r.phone, via: r.via, enteredBy: r.enteredBy, custNote: r.custNote || '' };
+        }),
+      });
+    });
+  });
+  const q = String(f.q || '').trim().toLowerCase(), qd = q.replace(/\D/g, '');
+  const out = groups.filter(function (g) {
+    if (!q) return true;
+    if (qd.length >= 4 && g.rows.some(function (r) { return String(r.phone).replace(/\D/g, '').indexOf(qd) >= 0; })) return true;
+    return g.rows.some(function (r) { return (r.name + ' ' + r.via + ' ' + r.enteredBy).toLowerCase().indexOf(q) >= 0; });
+  }).sort(function (a, b) { return b.latest - a.latest; });
+  return { total: out.length, groups: out.slice(0, 300) };
+}
+
 /* ───────────────────────── Records (viewer/admin) ───────────────────────── */
 
 function listRecords(token, f) {
-  const me = auth_(token, ['admin', 'viewer']);
+  const me = auth_(token, ['admin', 'viewer', 'checker']);
   f = f || {};
   const days = Number(f.days || 0);
   const all = days > 0 && days <= 31 ? recentClaims_() : readAllClaims_();   // recent periods: fast path

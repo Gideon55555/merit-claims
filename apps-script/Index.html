@@ -62,7 +62,8 @@
   .btn.small { padding: 5px 10px; font-size: 13px; font-weight: 500; }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
   .btn.wide { width: 100%; }
-  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  @media (max-width: 560px) { .seg { grid-template-columns: repeat(2, 1fr); } }
   .seg button { padding: 12px 8px; border: 1.5px solid #c9d1d7; background: #fff; border-radius: 9px; cursor: pointer; font-weight: 600; color: #33414d; }
   .seg button.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
   .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
@@ -136,6 +137,11 @@
   .chk-card .box { background: #f6f8f9; border-radius: 8px; padding: 10px 12px; font-size: 14px; }
   .chk-card .box b.big { font-size: 17px; letter-spacing: .5px; }
   .nav-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: var(--gold); color: #fff; font-size: 12px; line-height: 18px; text-align: center; }
+  .dup { border: 1px solid var(--line); border-radius: 10px; margin-top: 12px; overflow: hidden; }
+  .dup .dh { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 14px; background: #f6f8f9; border-bottom: 1px solid var(--line); }
+  .dup .dh b.num { font-size: 16px; letter-spacing: .5px; }
+  .dup tr.first td { background: #eef7f2; }
+  .dup .firsttag { display: inline-block; background: var(--ok); color: #fff; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; margin-right: 4px; }
   .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--brand); font-weight: 600; cursor: pointer; font-size: 14px; }
   .linkbtn:disabled { color: #9aa5ae; cursor: default; }
   .phone-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
@@ -190,13 +196,14 @@
       <div class="grid2">
         <div class="card">
           <h2>Register a customer</h2>
-          <p class="hint">A number is checked only in the category you choose: it can't be registered again in that category for 30 days. Registrations in the other categories are shown for information.</p>
+          <p class="hint">Fill in the customer and the agent, then register. Numbers registered more than once are reviewed by the Claim checker.</p>
           <form id="regForm" autocomplete="off">
             <label class="f"><span>Category</span>
               <div class="seg" id="regCat">
                 <button type="button" data-v="expecting">Expecting</button>
                 <button type="button" data-v="office">Office Visit</button>
                 <button type="button" data-v="site">Site Visit</button>
+                <button type="button" data-v="walkin">Walk In</button>
               </div>
             </label>
             <label class="f"><span>Customer name</span><input type="text" id="regName" maxlength="80"></label>
@@ -247,7 +254,7 @@
         <div class="stats" id="recStats"></div>
         <form id="recForm" class="row">
           <label class="f"><span>Category</span><select id="recCat">
-            <option value="all">All categories</option><option value="expecting">Expecting</option><option value="office">Office Visit</option><option value="site">Site Visit</option></select></label>
+            <option value="all">All categories</option><option value="expecting">Expecting</option><option value="office">Office Visit</option><option value="site">Site Visit</option><option value="walkin">Walk In</option></select></label>
           <label class="f"><span>Period</span><select id="recDays">
             <option value="1">Today</option><option value="7">Last 7 days</option><option value="31" selected>Last 31 days</option><option value="90">Last 90 days</option><option value="0">All time</option></select></label>
           <label class="f" style="flex:2 1 220px"><span>Search name, phone, agent, supervisor</span><input type="search" id="recQ"></label>
@@ -258,6 +265,23 @@
         <div class="tbl-wrap" style="max-height:65vh"><table><thead><tr>
           <th>Date</th><th>Category</th><th>Customer</th><th>Phone</th><th>Agent</th><th>Supervisor</th><th>Entered by</th><th>Status</th><th></th>
         </tr></thead><tbody id="recBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- Duplicates (Claim checker) -->
+    <section id="tDups" class="tab hidden">
+      <div class="card">
+        <h2>Duplicate numbers</h2>
+        <p class="hint">Phone numbers registered more than once: who registered each one, when, and who was first.</p>
+        <form id="dupForm" class="row">
+          <label class="f"><span>Period</span><select id="dupDays">
+            <option value="7">Last 7 days</option><option value="31" selected>Last 31 days</option><option value="90">Last 90 days</option><option value="0">All time</option></select></label>
+          <label class="f" style="flex:2 1 220px"><span>Search number, customer, agent</span><input type="search" id="dupQ"></label>
+          <label class="check shrink" style="margin-bottom:24px"><input type="checkbox" id="dupDiff" checked> Only different agents</label>
+          <div class="shrink" style="margin-bottom:14px"><button class="btn primary" type="submit">Show</button></div>
+        </form>
+        <div class="count" id="dupCount"></div>
+        <div id="dupList"></div>
       </div>
     </section>
 
@@ -307,16 +331,16 @@
 <div id="toast" class="hidden"></div>
 
 <script>
-const CATS = { expecting: 'Expecting', office: 'Office Visit', site: 'Site Visit' };
+const CATS = { expecting: 'Expecting', office: 'Office Visit', site: 'Site Visit', walkin: 'Walk In' };
 const TABS = [
   { id: 'tRegister', label: 'Register', roles: ['admin', 'entry'] },
-  { id: 'tCheck', label: 'Check number', roles: ['admin', 'entry', 'viewer'] },
-  { id: 'tChecks', label: 'Checks', roles: ['admin', 'entry'] },
-  { id: 'tRecords', label: 'Records', roles: ['admin', 'viewer'] },
+  { id: 'tDups', label: 'Duplicates', roles: ['checker', 'admin'] },
+  { id: 'tCheck', label: 'Check number', roles: ['admin', 'entry', 'viewer', 'checker'] },
+  { id: 'tRecords', label: 'Records', roles: ['admin', 'viewer', 'checker'] },
   { id: 'tUsers', label: 'Users', roles: ['admin'] },
   { id: 'tAgents', label: 'Agents', roles: ['admin'] },
 ];
-const ROLE_LABEL = { admin: 'Admin', entry: 'Data entry', viewer: 'Viewer' };
+const ROLE_LABEL = { admin: 'Admin', entry: 'Data entry', viewer: 'Viewer', checker: 'Claim checker' };
 const S = { token: null, user: null, agents: [], types: [], cat: null, agent: null, phoneState: null, users: [] };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -380,6 +404,7 @@ function openTab(id) {
   if (id === 'tRecords' && !S.recLoaded) loadRecords();
   if (id === 'tUsers') loadUsers();
   if (id === 'tChecks') loadChecks();
+  if (id === 'tDups' && !S.dupLoaded) loadDups();
 }
 
 /* ---------- login ---------- */
@@ -545,31 +570,37 @@ function bindPhone(input, el, skip, getWho, getCtx) {
         if (my !== seq || !S.user) return;
         if (!r.valid) { input.dataset.state = 'invalid'; return msgBox(el, 'warn', esc(r.error)); }
         const catName = r.category ? CATS[r.category] : '';
-        if (r.lock && r.lock.sameCategory) {
-          input.dataset.state = 'locked';
-          msgBox(el, 'bad', '<span class="big">Already registered in ' + esc(r.lock.category) + '</span>' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) +
-            '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + ' (' + esc(r.lock.name) + '). It can\'t be registered in ' + esc(r.lock.category) + ' again until ' + esc(r.lock.freeFrom) + '.');
-        } else if (r.lock) {
-          input.dataset.state = 'locked';
-          const why = r.lock.match === 'hidden' || r.lock.match === 'name'
-            ? '<div class="why">The first 8 digits are the same and the last digits are hidden, so it is blocked whatever name is typed. ' +
-              (S.user && S.user.role === 'admin' ? 'Compare both <b>full numbers</b>; if they are different, click <b>Checked</b> after submitting.' : 'Submit, then click <b>Send to admin</b>: an administrator will compare both full numbers.') + '</div>' : '';
-          msgBox(el, 'bad', lockHtml(r.lock, 'Already claimed in ' + esc(r.lock.category)) + why);
-        } else if (!r.category) {
+        if (!r.blocking) {                                     // claimed numbers can be registered: no warnings
           input.dataset.state = 'free';
-          msgBox(el, 'info', 'Choose a <b>category</b> above: the number is checked only in the category you register it in.');
+          msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> ✓');
         } else {
-          input.dataset.state = 'free';
-          msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register in <b>' + esc(catName) + '</b>.');
-        }
-        if (r.others && r.others.length) {
-          const box = document.createElement('div');
-          box.className = 'status warn'; box.style.marginTop = '6px';
-          box.innerHTML = '<b>Also registered in ' + (r.category ? 'other categories' : 'these categories') + ' (last 30 days):</b><ul style="margin:4px 0 0;padding-left:18px">' +
-            r.others.map((o) => '<li><b>' + esc(o.category) + '</b> on ' + esc(o.date) + ' by <b>' + esc(o.via || '—') + '</b>, ' + esc(o.name || '—') + ' ' + esc(o.phone) +
-              ' <span class="muted">(until ' + esc(o.lockedUntil) + ')</span></li>').join('') + '</ul>' +
-            (r.category ? '<div style="font-size:12.5px;margin-top:4px">This does not block registering in ' + esc(catName) + '.</div>' : '');
-          el.appendChild(box);
+        const catName = r.category ? CATS[r.category] : '';
+          if (r.lock && r.lock.sameCategory) {
+            input.dataset.state = 'locked';
+            msgBox(el, 'bad', '<span class="big">Already registered in ' + esc(r.lock.category) + '</span>' + esc(r.formatted) + ' was registered by <b>' + esc(r.lock.via) +
+              '</b> in ' + esc(r.lock.category) + ' on ' + esc(r.lock.date) + ' (' + esc(r.lock.name) + '). It can\'t be registered in ' + esc(r.lock.category) + ' again until ' + esc(r.lock.freeFrom) + '.');
+          } else if (r.lock) {
+            input.dataset.state = 'locked';
+            const why = r.lock.match === 'hidden' || r.lock.match === 'name'
+              ? '<div class="why">The first 8 digits are the same and the last digits are hidden, so it is blocked whatever name is typed. ' +
+                (S.user && S.user.role === 'admin' ? 'Compare both <b>full numbers</b>; if they are different, click <b>Checked</b> after submitting.' : 'Submit, then click <b>Send to admin</b>: an administrator will compare both full numbers.') + '</div>' : '';
+            msgBox(el, 'bad', lockHtml(r.lock, 'Already claimed in ' + esc(r.lock.category)) + why);
+          } else if (!r.category) {
+            input.dataset.state = 'free';
+            msgBox(el, 'info', 'Choose a <b>category</b> above: the number is checked only in the category you register it in.');
+          } else {
+            input.dataset.state = 'free';
+            msgBox(el, 'ok', '<b>' + esc(r.formatted) + '</b> is free to register in <b>' + esc(catName) + '</b>.');
+          }
+          if (r.others && r.others.length) {
+            const box = document.createElement('div');
+            box.className = 'status warn'; box.style.marginTop = '6px';
+            box.innerHTML = '<b>Also registered in ' + (r.category ? 'other categories' : 'these categories') + ' (last 30 days):</b><ul style="margin:4px 0 0;padding-left:18px">' +
+              r.others.map((o) => '<li><b>' + esc(o.category) + '</b> on ' + esc(o.date) + ' by <b>' + esc(o.via || '—') + '</b>, ' + esc(o.name || '—') + ' ' + esc(o.phone) +
+                ' <span class="muted">(until ' + esc(o.lockedUntil) + ')</span></li>').join('') + '</ul>' +
+              (r.category ? '<div style="font-size:12.5px;margin-top:4px">This does not block registering in ' + esc(catName) + '.</div>' : '');
+            el.appendChild(box);
+          }
         }
         loadHistory(el, input.value, skip, () => my === seq, getCtx);
       } catch (e) { if (my === seq) msgBox(el, 'warn', esc(e.message)); }
@@ -596,7 +627,6 @@ function renderHistory(el, h, getCtx) {
   else box.innerHTML = '<b>Previous registrations (' + h.length + '):</b><ul>' + h.map((x) =>
       '<li><span class="cat' + (x.catKey === ctx.category ? ' now' : '') + '">' + esc(x.category) + '</span>' + esc(x.date) + ' · <b>' + esc(x.name || '—') + '</b> ' + esc(x.phone) +
       ' · by <b>' + esc(x.via || '—') + '</b> ' +
-      (x.active ? '<span class="tag lock">claimed until ' + esc(x.endsOn) + '</span>' : '<span class="muted">(ended ' + esc(x.endsOn) + ')</span>') +
       (x.custNote ? '<span class="cn">Note: ' + esc(x.custNote) + '</span>' : '') + '</li>').join('') + '</ul>';
   el.appendChild(box);
 }
@@ -688,6 +718,25 @@ async function sendToAdmin() {
     $('regName').value = ''; $('regNote').value = ''; $('regPhone').value = ''; $('regPhone').dataset.state = ''; $('regPhoneStatus').innerHTML = ''; $('regExtraPhones').innerHTML = ''; syncRegAdd();
     loadChecks();
   } catch (e) { toast(e.message, true); busy(btn, false); }
+}
+
+/* ---------- duplicates (claim checker) ---------- */
+$('dupForm').onsubmit = (e) => { e.preventDefault(); loadDups(e.submitter); };
+async function loadDups(btn) {
+  btn = btn || $('dupForm').querySelector('button'); busy(btn, true, 'Loading…');
+  $('dupCount').innerHTML = '<span class="spin"></span> Looking for duplicate numbers…'; $('dupList').innerHTML = '';
+  try {
+    const r = await call('listDuplicates', S.token, { days: +$('dupDays').value, q: $('dupQ').value, differentAgents: $('dupDiff').checked });
+    S.dupLoaded = true;
+    $('dupCount').textContent = r.total ? r.total + ' duplicate number' + (r.total > 1 ? 's' : '') + (r.total > r.groups.length ? ' (showing newest ' + r.groups.length + ')' : '') : 'No duplicate numbers in this period.';
+    $('dupList').innerHTML = r.groups.map((g) => '<div class="dup"><div class="dh"><b class="num">' + esc(g.number) + '</b>' +
+      '<span>' + g.count + ' registrations</span>' + (g.agents > 1 ? '<span class="tag lock">' + g.agents + ' different agents</span>' : '<span class="tag off">same agent</span>') + '</div>' +
+      '<div class="tbl-wrap" style="border:0;border-radius:0"><table><thead><tr><th>#</th><th>Date</th><th>Time</th><th>Category</th><th>Customer</th><th>Phone</th><th>Agent</th><th>Entered by</th></tr></thead><tbody>' +
+      g.rows.map((x, i) => '<tr' + (x.first ? ' class="first"' : '') + '><td>' + (x.first ? '<span class="firsttag">FIRST</span>' : (i + 1)) + '</td><td class="nowrap">' + esc(x.date) + '</td><td>' + esc(x.time || '—') +
+        '</td><td>' + esc(x.category) + '</td><td>' + esc(x.name) + (x.custNote ? '<br><small class="muted">' + esc(x.custNote) + '</small>' : '') + '</td><td class="nowrap">' + esc(x.phone) +
+        '</td><td>' + esc(x.via) + '</td><td>' + esc(x.enteredBy || '—') + '</td></tr>').join('') + '</tbody></table></div></div>').join('');
+  } catch (e) { $('dupCount').textContent = e.message; }
+  busy(btn, false);
 }
 
 /* ---------- checks tab ---------- */
